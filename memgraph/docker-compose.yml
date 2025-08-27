@@ -1,0 +1,91 @@
+name: memgraph-db
+
+services:
+  memgraph-db:
+    image: memgraph/memgraph-mage:latest
+    restart: unless-stopped
+    container_name: memgraph-db
+    ports:
+      - "${MEMGRAPH_LOG_PORT:-8544}:7444"  # Log streaming/HTTP API
+      - "${MEMGRAPH_BOLT_PORT:-8587}:7687"  # Bolt protocol
+    networks:
+      - memgraph-network
+    volumes:
+      - memgraph-db-data:/var/lib/memgraph
+      - memgraph-db-logs:/var/log/memgraph
+      - memgraph-db-conf:/etc/memgraph
+    environment:
+      - MEMGRAPH_USER=${MEMGRAPH_USER:-memgraph}
+      - MEMGRAPH_PASSWORD=${MEMGRAPH_PASSWORD:-changeme}
+    mem_limit: ${MEMGRAPH_MEMORY_LIMIT:-1g}
+    command: ["--log-level=DEBUG"]
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'RETURN 0;' | mgconsole --username=${MEMGRAPH_USER} --password=${MEMGRAPH_PASSWORD} || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 0s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-memgraph-db}"
+      - "environment=${ENVIRONMENT:-dev}"
+      - "service.type=database"
+      - "service.name=memgraph"
+      - "service.version=latest"
+      - "database.type=graph"
+      - "database.engine=memgraph"
+      - "backup.frequency=daily"
+      - "backup.priority=critical"
+      - "monitoring.enabled=true"
+      - "team.owner=${TEAM:-platform}"
+      - "expose.ports=8244,8287"
+
+  memgraph-lab:
+    image: memgraph/lab:latest
+    container_name: memgraph-lab
+    ports:
+      - "${MEMGRAPH_LAB_PORT:-8550}:3000"
+    networks:
+      - memgraph-network
+    environment:
+      - QUICK_CONNECT_MG_HOST=memgraph-db
+      - QUICK_CONNECT_MG_PORT=7687
+    depends_on:
+      - memgraph-db
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-memgraph-db}"
+      - "environment=${ENVIRONMENT:-dev}"
+      - "service.type=ui"
+      - "service.name=memgraph-lab"
+      - "service.version=latest"
+      - "ui.for=memgraph"
+      - "ui.type=web"
+      - "monitoring.enabled=true"
+      - "team.owner=${TEAM:-platform}"
+      - "expose.ports=8250"
+
+volumes:
+  memgraph-db-data:
+  memgraph-db-logs:
+  memgraph-db-conf:
+
+networks:
+  memgraph-network:
+    name: memgraph-network
+    driver: bridge
+  

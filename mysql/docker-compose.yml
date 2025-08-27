@@ -1,0 +1,91 @@
+name: mysql-db
+
+services:
+  mysql-db:
+    image: mysql:latest
+    restart: unless-stopped
+    container_name: mysql-db
+    ports:
+      - "${MYSQL_PORT:-8306}:3306"
+    networks:
+      - mysql-network
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - mysql-init:/docker-entrypoint-initdb.d
+      - ./my.cnf:/etc/mysql/my.cnf:ro
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-myapp}
+      MYSQL_USER: ${MYSQL_USER:-user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-changeme}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
+    mem_limit: ${MYSQL_MEMORY_LIMIT:-1g}
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p${MYSQL_ROOT_PASSWORD:-changeme}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    cap_add:
+      - SYS_NICE
+    labels:
+      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-mysql-db}"
+      - "environment=${ENVIRONMENT:-dev}"
+      - "service.type=database"
+      - "service.name=mysql"
+      - "service.version=latest"
+      - "database.type=relational"
+      - "database.engine=mysql"
+      - "backup.frequency=daily"
+      - "backup.priority=critical"
+      - "monitoring.enabled=true"
+      - "team.owner=${TEAM:-platform}"
+      - "expose.ports=8306"
+
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    container_name: mysql-adminer
+    ports:
+      - "${ADMINER_PORT:-8880}:8080"
+    networks:
+      - mysql-network
+    mem_limit: ${ADMINER_MEMORY_LIMIT:-256m}
+    environment:
+      ADMINER_DEFAULT_SERVER: mysql-db
+    depends_on:
+      - mysql-db
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-mysql-db}"
+      - "environment=${ENVIRONMENT:-dev}"
+      - "service.type=ui"
+      - "service.name=adminer"
+      - "service.version=latest"
+      - "ui.for=mysql"
+      - "ui.type=web"
+      - "monitoring.enabled=true"
+      - "team.owner=${TEAM:-platform}"
+      - "expose.ports=8880"
+
+volumes:
+  mysql-data:
+  mysql-init:
+
+networks:
+  mysql-network:
+    name: mysql-network
+    driver: bridge

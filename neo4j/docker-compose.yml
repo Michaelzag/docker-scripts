@@ -1,0 +1,63 @@
+name: neo4j-db
+
+services:
+  neo4j-db:
+    image: neo4j:latest
+    restart: unless-stopped
+    container_name: neo4j-db
+    ports:
+      - "${NEO4J_HTTP_PORT:-8474}:7474"  # HTTP
+      - "${NEO4J_BOLT_PORT:-8487}:7687"  # Bolt
+    networks:
+      - neo4j-network
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+      - ./import:/import
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-changeme}
+      - NEO4J_server_default__listen__address=0.0.0.0
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      - NEO4J_server_memory_heap_initial__size=${NEO4J_HEAP_MEMORY:-512m}
+      - NEO4J_server_memory_heap_max__size=${NEO4J_HEAP_MEMORY:-512m}
+      - NEO4J_server_memory_pagecache_size=${NEO4J_PAGECACHE_MEMORY:-512m}
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_initializer_enabled=true
+      - NEO4J_apoc_import_file_use_neo4j_config=false
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:7474/db/system/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-neo4j-db}"
+      - "environment=${ENVIRONMENT:-dev}"
+      - "service.type=database"
+      - "service.name=neo4j"
+      - "service.version=latest"
+      - "database.type=graph"
+      - "database.engine=neo4j"
+      - "plugins.enabled=apoc,graph-data-science"
+      - "backup.frequency=daily"
+      - "backup.priority=critical"
+      - "monitoring.enabled=true"
+      - "team.owner=${TEAM:-platform}"
+      - "expose.ports=7474,7687"
+
+volumes:
+  neo4j-data:
+  neo4j-logs:
+
+networks:
+  neo4j-network:
+    name: neo4j-network
+    driver: bridge
