@@ -35,7 +35,7 @@ services:
       - "environment=${ENVIRONMENT:-dev}"
       - "service_type=database"
       - "service_name=mysql"
-      - "database_type=relational"
+      - "database_type=mysql"
       - "database_engine=mysql"
       - "container_group=databases"
       - "monitoring_enabled=true"

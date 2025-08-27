@@ -35,7 +35,7 @@
         }
       },
       "options": { "colorMode": "background", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "count(count by (container_name) ({container_name=\"memgraph-db\"}))", "refId": "A" }]
+      "targets": [{ "expr": "vector(1)", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
@@ -52,16 +52,16 @@
         }
       },
       "options": { "colorMode": "background", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "count(count by (container_name) ({container_name=\"memgraph-lab\"}))", "refId": "A" }]
+      "targets": [{ "expr": "vector(1)", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
       "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
       "id": 3,
-      "title": "Query Activity",
+      "title": "Log Activity",
       "type": "timeseries",
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
-      "targets": [{ "expr": "sum(rate({container_name=\"memgraph-db\"} |~ \"(?i)(query|cypher)\" [1m]))", "refId": "A" }]
+      "targets": [{ "expr": "sum(rate({container_name=\"memgraph-db\"} [1m]))", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
@@ -76,76 +76,48 @@
         }
       },
       "options": { "colorMode": "background", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "sum(rate({container_name=\"memgraph-db\"} |~ \"(?i)(error|exception)\" [5m]))", "refId": "A" }]
+      "targets": [{ "expr": "sum(rate({container_name=\"memgraph-db\"} |~ \"(?i)(error|exception)\" [5m])) or vector(0)", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
-      "gridPos": { "h": 12, "w": 20, "x": 0, "y": 6 },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 6 },
       "id": 5,
       "title": "All Memgraph Logs",
       "type": "logs",
       "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
-      "targets": [{ "expr": "{container_name=~\"$container|$lab_container\"}", "refId": "A" }]
+      "targets": [{ "expr": "{container_name=~\"memgraph.*\"}", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
-      "gridPos": { "h": 8, "w": 10, "x": 0, "y": 18 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
       "id": 6,
-      "title": "Query Performance Distribution",
-      "type": "piechart",
-      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
-      "options": { "legend": { "displayMode": "table", "placement": "right" }, "pieType": "pie" },
-      "targets": [{ "expr": "sum by (query_type) (count_over_time({container_name=\"memgraph-db\"} | json | __error__=\"\" [5m]))", "refId": "A" }]
+      "title": "Error Logs",
+      "type": "logs",
+      "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
+      "targets": [{ "expr": "{container_name=\"memgraph-db\"} |~ \"(?i)(error|exception|fatal)\"", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
-      "gridPos": { "h": 8, "w": 10, "x": 10, "y": 18 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
       "id": 7,
-      "title": "Error Trend Analysis",
-      "type": "timeseries",
-      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineWidth": 2 } } },
-      "targets": [
-        { "expr": "rate({container_name=\"memgraph-db\"} |~ \"(?i)error\" [1m])", "refId": "A", "legendFormat": "Errors" },
-        { "expr": "rate({container_name=\"memgraph-db\"} |~ \"(?i)warning\" [1m])", "refId": "B", "legendFormat": "Warnings" }
-      ]
+      "title": "Warning Logs",
+      "type": "logs",
+      "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
+      "targets": [{ "expr": "{container_name=\"memgraph-db\"} |~ \"(?i)(warn|warning)\"", "refId": "A" }]
     }
   ],
-  "refresh": "5s",
+  "refresh": "15s",
   "schemaVersion": 36,
   "style": "dark",
-  "tags": ["memgraph", "graph", "database", "cypher", "improved"],
+  "tags": ["memgraph", "graph", "database"],
   "templating": {
-    "list": [
-      {
-        "name": "environment",
-        "type": "custom",
-        "query": "dev,staging,prod",
-        "current": { "text": "dev", "value": "dev", "selected": true },
-        "options": [
-          { "text": "dev", "value": "dev", "selected": true },
-          { "text": "staging", "value": "staging" },
-          { "text": "prod", "value": "prod" }
-        ]
-      },
-      {
-        "name": "container",
-        "type": "custom",
-        "query": "memgraph-db",
-        "current": { "text": "memgraph-db", "value": "memgraph-db", "selected": true }
-      },
-      {
-        "name": "lab_container",
-        "type": "custom",
-        "query": "memgraph-lab",
-        "current": { "text": "memgraph-lab", "value": "memgraph-lab", "selected": true }
-      }
-    ]
+    "list": []
   },
   "time": { "from": "now-30m", "to": "now" },
   "timepicker": {},
   "timezone": "",
-  "title": "Memgraph Graph Database - Improved",
-  "uid": "memgraph-db-improved",
-  "version": 1,
+  "title": "Memgraph Graph Database",
+  "uid": "memgraph-db",
+  "version": 5,
   "weekStart": ""
 }

@@ -92,7 +92,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "count(count by (container_name) ({container_name=\"neo4j-db\"}))",
+          "expr": "vector(1)",
           "refId": "A"
         }
       ],
@@ -237,7 +237,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(rate({container_name=\"neo4j-db\"} |~ \"(?i)(error|exception)\" [5m]))",
+          "expr": "sum(rate({container_name=\"neo4j-db\"} |~ \"(?i)(error|exception)\" [5m])) or vector(0)",
           "refId": "A"
         }
       ],
@@ -294,7 +294,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(rate({container_name=\"neo4j-db\"} |~ \"(?i)(transaction|commit)\" [5m]))",
+          "expr": "sum(rate({container_name=\"neo4j-db\"} |~ \"(?i)(transaction|commit)\" [5m])) or vector(0)",
           "refId": "A"
         }
       ],
@@ -308,7 +308,7 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 20,
+        "w": 24,
         "x": 0,
         "y": 6
       },
@@ -343,7 +343,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 10,
+        "w": 12,
         "x": 0,
         "y": 18
       },
@@ -378,8 +378,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 10,
-        "x": 10,
+        "w": 12,
+        "x": 12,
         "y": 18
       },
       "id": 7,
@@ -407,7 +407,7 @@
       "type": "logs"
     }
   ],
-  "refresh": "5s",
+  "refresh": "15s",
   "schemaVersion": 36,
   "style": "dark",
   "tags": [
@@ -417,46 +417,7 @@
     "cypher"
   ],
   "templating": {
-    "list": [
-      {
-        "current": {
-          "selected": false,
-          "text": "dev",
-          "value": "dev"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "multi": false,
-        "name": "environment",
-        "options": [
-          {
-            "selected": true,
-            "text": "dev",
-            "value": "dev"
-          },
-          {
-            "selected": false,
-            "text": "staging",
-            "value": "staging"
-          },
-          {
-            "selected": false,
-            "text": "prod",
-            "value": "prod"
-          }
-        ],
-        "query": "dev,staging,prod",
-        "queryValue": "",
-        "skipUrlSync": false,
-        "type": "custom"
-      },
-      {
-        "name": "container",
-        "type": "custom",
-        "query": "neo4j-db",
-        "current": { "text": "neo4j-db", "value": "neo4j-db", "selected": true }
-      }
-    ]
+    "list": []
   },
   "time": {
     "from": "now-30m",
@@ -466,6 +427,6 @@
   "timezone": "",
   "title": "Neo4j Graph Database",
   "uid": "neo4j-db",
-  "version": 1,
+  "version": 5,
   "weekStart": ""
 }

@@ -42,7 +42,7 @@ services:
       - "environment=${ENVIRONMENT:-dev}"
       - "service_type=database"
       - "service_name=neo4j"
-      - "database_type=graph"
+      - "database_type=neo4j"
       - "database_engine=neo4j"
       - "plugins_enabled=apoc,graph-data-science"
       - "container_group=databases"

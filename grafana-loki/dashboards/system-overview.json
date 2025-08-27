@@ -39,7 +39,7 @@
         }
       },
       "options": { "colorMode": "background", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "count(count by (container_name) (rate({container_name=~\".+\"} [5m])))", "refId": "A" }]
+      "targets": [{ "expr": "count(count by (container_name) (rate({environment=~\"$environment\", container_group=~\"$container_group\", service_name=~\"$service_name\"} [5m])))", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
@@ -54,7 +54,7 @@
         }
       },
       "options": { "colorMode": "background", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [{ "expr": "sum(rate({container_group=~\"$container_group\"} |~ \"(?i)(error|exception)\" [5m]))", "refId": "A" }]
+      "targets": [{ "expr": "sum(rate({environment=~\"$environment\", container_group=~\"$container_group\", service_name=~\"$service_name\"} |~ \"(?i)(error|exception)\" [5m]))", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
@@ -63,7 +63,7 @@
       "title": "Overall Activity Trend",
       "type": "timeseries",
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
-      "targets": [{ "expr": "sum(rate({container_group=~\"$container_group\"} [1m]))", "refId": "A" }]
+      "targets": [{ "expr": "sum(rate({environment=~\"$environment\", container_group=~\"$container_group\"} [1m]))", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
@@ -72,7 +72,7 @@
       "title": "Service Health Matrix",
       "type": "heatmap",
       "fieldConfig": { "defaults": { "color": { "mode": "spectrum" } } },
-      "targets": [{ "expr": "sum by (container_name) (rate({container_group=~\"$container_group\"} [5m]))", "refId": "A" }]
+      "targets": [{ "expr": "sum by (container_name) (rate({environment=~\"$environment\", container_group=~\"$container_group\"} [5m]))", "refId": "A" }]
     },
     {
       "title": "Service Performance Analysis",
@@ -93,7 +93,7 @@
         }
       },
       "options": { "legend": { "displayMode": "table", "placement": "right" } },
-      "targets": [{ "expr": "sum by (database_type) (rate({database_type=~\".+\"} [5m]))", "refId": "A" }]
+      "targets": [{ "expr": "sum by (database_type) (rate({environment=~\"$environment\"} [5m]))", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
@@ -103,7 +103,7 @@
       "type": "piechart",
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
       "options": { "legend": { "displayMode": "table", "placement": "right" }, "pieType": "pie" },
-      "targets": [{ "expr": "sum by (service_name) (rate({service_name=~\".+\"} |~ \"(?i)error\" [15m]))", "refId": "A" }]
+      "targets": [{ "expr": "sum by (service_name) (rate({environment=~\"$environment\"} |~ \"(?i)error\" [15m]))", "refId": "A" }]
     },
     {
       "title": "Critical Issues & Alerts",
@@ -118,7 +118,7 @@
       "title": "Critical Errors & Warnings",
       "type": "logs",
       "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true, "showLabels": true },
-      "targets": [{ "expr": "{container_group=~\"$container_group\"} |~ \"(?i)(error|critical|fatal|exception)\"", "refId": "A" }]
+      "targets": [{ "expr": "{environment=~\"$environment\", container_group=~\"$container_group\", service_name=~\"$service_name\"} |~ \"(?i)(error|critical|fatal|exception)\"", "refId": "A" }]
     },
     {
       "title": "Performance Insights",
@@ -134,7 +134,7 @@
       "type": "bargauge",
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
       "options": { "orientation": "horizontal", "displayMode": "gradient" },
-      "targets": [{ "expr": "topk(5, sum by (container_name) (rate({container_group=~\"$container_group\"} [15m])))", "refId": "A" }]
+      "targets": [{ "expr": "topk(5, sum by (service_name) (rate({environment=~\"$environment\", container_group=~\"$container_group\"} [15m])))", "refId": "A" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },
@@ -149,9 +149,9 @@
         }
       },
       "targets": [
-        { "expr": "rate({database_type=\"mysql\"} |~ \"(?i)error\" [1m])", "refId": "A", "legendFormat": "MySQL Errors" },
-        { "expr": "rate({database_type=\"neo4j\"} |~ \"(?i)error\" [1m])", "refId": "B", "legendFormat": "Neo4j Errors" },
-        { "expr": "rate({database_type=\"memgraph\"} |~ \"(?i)error\" [1m])", "refId": "C", "legendFormat": "Memgraph Errors" }
+        { "expr": "rate({database_type=\"mysql\", environment=~\"$environment\"} |~ \"(?i)error\" [1m])", "refId": "A", "legendFormat": "MySQL Errors" },
+        { "expr": "rate({database_type=\"neo4j\", environment=~\"$environment\"} |~ \"(?i)error\" [1m])", "refId": "B", "legendFormat": "Neo4j Errors" },
+        { "expr": "rate({database_type=\"memgraph\", environment=~\"$environment\"} |~ \"(?i)error\" [1m])", "refId": "C", "legendFormat": "Memgraph Errors" }
       ]
     },
     {
@@ -169,42 +169,50 @@
           "max": 100
         }
       },
-      "targets": [{ "expr": "100 - (sum(rate({container_group=~\"$container_group\"} |~ \"(?i)error\" [5m])) / sum(rate({container_group=~\"$container_group\"} [5m])) * 100)", "refId": "A" }]
+      "targets": [{ "expr": "100 - (sum(rate({environment=~\"$environment\", container_group=~\"$container_group\"} |~ \"(?i)error\" [5m])) / sum(rate({environment=~\"$environment\", container_group=~\"$container_group\"} [5m])) * 100)", "refId": "A" }]
     }
   ],
-  "refresh": "10s",
+  "refresh": "15s",
   "schemaVersion": 36,
   "style": "dark",
-  "tags": ["overview", "system", "monitoring", "improved", "correlation"],
+  "tags": ["overview", "system", "monitoring"],
   "templating": {
     "list": [
       {
         "name": "environment",
-        "type": "custom",
-        "query": "dev,staging,prod",
-        "current": { "text": "All", "value": "$__all", "selected": true },
-        "options": [
-          { "text": "All", "value": "$__all", "selected": true },
-          { "text": "dev", "value": "dev" },
-          { "text": "staging", "value": "staging" },
-          { "text": "prod", "value": "prod" }
-        ],
+        "type": "query",
+        "datasource": "Loki",
+        "query": "label_values({monitoring_enabled=\"true\"}, environment)",
         "includeAll": true,
-        "multi": true
+        "multi": true,
+        "refresh": 2
       },
       {
         "name": "container_group",
-        "type": "custom",
-        "query": "databases,admin-tools,monitoring",
-        "current": { "text": "All", "value": "$__all", "selected": true },
-        "options": [
-          { "text": "All", "value": "$__all", "selected": true },
-          { "text": "databases", "value": "databases" },
-          { "text": "admin-tools", "value": "admin-tools" },
-          { "text": "monitoring", "value": "monitoring" }
-        ],
+        "type": "query",
+        "datasource": "Loki",
+        "query": "label_values({monitoring_enabled=\"true\", environment=~\"$environment\"}, container_group)",
         "includeAll": true,
-        "multi": true
+        "multi": true,
+        "refresh": 2
+      },
+      {
+        "name": "service_name",
+        "type": "query",
+        "datasource": "Loki",
+        "query": "label_values({monitoring_enabled=\"true\", environment=~\"$environment\", container_group=~\"$container_group\"}, service_name)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2
+      },
+      {
+        "name": "container_name",
+        "type": "query",
+        "datasource": "Loki",
+        "query": "label_values({monitoring_enabled=\"true\", environment=~\"$environment\", service_name=~\"$service_name\"}, container_name)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2
       }
     ]
   },
@@ -213,6 +221,6 @@
   "timezone": "",
   "title": "System Overview",
   "uid": "system-overview",
-  "version": 1,
+  "version": 4,
   "weekStart": ""
 }

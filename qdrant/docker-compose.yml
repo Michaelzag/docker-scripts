@@ -29,7 +29,7 @@ services:
       - "environment=${ENVIRONMENT:-dev}"
       - "service_type=database"
       - "service_name=qdrant"
-      - "database_type=vector"
+      - "database_type=qdrant"
       - "database_engine=qdrant"
       - "database_use_case=similarity-search,embeddings"
       - "api_protocols=http,grpc"

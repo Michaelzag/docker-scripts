@@ -34,7 +34,7 @@ services:
       - "environment=${ENVIRONMENT:-dev}"
       - "service_type=database"
       - "service_name=memgraph"
-      - "database_type=graph"
+      - "database_type=memgraph"
       - "database_engine=memgraph"
       - "container_group=databases"
       - "monitoring_enabled=true"
