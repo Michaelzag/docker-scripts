@@ -33,12 +33,12 @@ services:
       - SYS_NICE
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=database"
-      - "service.name=mysql"
-      - "database.type=relational"
-      - "database.engine=mysql"
-      - "container.group=databases"
-      - "monitoring.enabled=true"
+      - "service_type=database"
+      - "service_name=mysql"
+      - "database_type=relational"
+      - "database_engine=mysql"
+      - "container_group=databases"
+      - "monitoring_enabled=true"
 
   adminer:
     image: adminer:latest
@@ -66,12 +66,12 @@ services:
         max-file: "3"
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=ui"
-      - "service.name=adminer"
-      - "ui.for=mysql"
-      - "ui.type=web"
-      - "container.group=admin-tools"
-      - "monitoring.enabled=true"
+      - "service_type=ui"
+      - "service_name=adminer"
+      - "ui_for=mysql"
+      - "ui_type=web"
+      - "container_group=admin-tools"
+      - "monitoring_enabled=true"
 
 volumes:
   mysql-data:

@@ -172,7 +172,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(count_over_time({container_name=\"neo4j-db\"} |~ \"(?i)(query|cypher)\" [1m]))",
+          "expr": "sum(rate({container_name=\"neo4j-db\"} |~ \"(?i)(query|cypher)\" [1m]))",
           "refId": "A"
         }
       ],
@@ -237,7 +237,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(count_over_time({container_name=\"neo4j-db\"} |~ \"(?i)(error|ERROR|exception)\" [5m]))",
+          "expr": "sum(rate({container_name=\"neo4j-db\"} |~ \"(?i)(error|exception)\" [5m]))",
           "refId": "A"
         }
       ],
@@ -294,7 +294,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(count_over_time({container_name=\"neo4j-db\"} |~ \"(?i)(transaction|commit)\" [5m]))",
+          "expr": "sum(rate({container_name=\"neo4j-db\"} |~ \"(?i)(transaction|commit)\" [5m]))",
           "refId": "A"
         }
       ],
@@ -449,6 +449,12 @@
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"
+      },
+      {
+        "name": "container",
+        "type": "custom",
+        "query": "neo4j-db",
+        "current": { "text": "neo4j-db", "value": "neo4j-db", "selected": true }
       }
     ]
   },

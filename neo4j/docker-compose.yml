@@ -40,13 +40,13 @@ services:
         max-file: "3"
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=database"
-      - "service.name=neo4j"
-      - "database.type=graph"
-      - "database.engine=neo4j"
-      - "plugins.enabled=apoc,graph-data-science"
-      - "container.group=databases"
-      - "monitoring.enabled=true"
+      - "service_type=database"
+      - "service_name=neo4j"
+      - "database_type=graph"
+      - "database_engine=neo4j"
+      - "plugins_enabled=apoc,graph-data-science"
+      - "container_group=databases"
+      - "monitoring_enabled=true"
 
 volumes:
   neo4j-data:

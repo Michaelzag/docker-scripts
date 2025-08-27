@@ -32,12 +32,12 @@ services:
         max-file: "3"
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=database"
-      - "service.name=memgraph"
-      - "database.type=graph"
-      - "database.engine=memgraph"
-      - "container.group=databases"
-      - "monitoring.enabled=true"
+      - "service_type=database"
+      - "service_name=memgraph"
+      - "database_type=graph"
+      - "database_engine=memgraph"
+      - "container_group=databases"
+      - "monitoring_enabled=true"
 
   memgraph-lab:
     image: memgraph/lab:latest
@@ -64,12 +64,12 @@ services:
         max-file: "3"
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=ui"
-      - "service.name=memgraph-lab"
-      - "ui.for=memgraph"
-      - "ui.type=web"
-      - "container.group=admin-tools"
-      - "monitoring.enabled=true"
+      - "service_type=ui"
+      - "service_name=memgraph-lab"
+      - "ui_for=memgraph"
+      - "ui_type=web"
+      - "container_group=admin-tools"
+      - "monitoring_enabled=true"
 
 volumes:
   memgraph-db-data:

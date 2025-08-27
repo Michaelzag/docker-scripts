@@ -30,12 +30,12 @@ services:
         max-file: "3"
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=monitoring"
-      - "service.name=loki"
-      - "monitoring.stack=observability"
-      - "monitoring.role=log-aggregation"
-      - "container.group=monitoring"
-      - "monitoring.enabled=true"
+      - "service_type=monitoring"
+      - "service_name=loki"
+      - "monitoring_stack=observability"
+      - "monitoring_role=log-aggregation"
+      - "container_group=monitoring"
+      - "monitoring_enabled=true"
 
   promtail:
     image: grafana/promtail:latest
@@ -50,6 +50,7 @@ services:
       - sh
       - -euc
       - |
+        apt-get update && apt-get install -y wget || echo "wget install failed, continuing..."
         mkdir -p /etc/promtail
         cat <<EOF > /etc/promtail/config.yml
         server:
@@ -62,41 +63,30 @@ services:
         clients:
           - url: http://loki:3100/loki/api/v1/push
         
+        
         scrape_configs:
           - job_name: containers
-            static_configs:
-              - targets:
-                  - localhost
-                labels:
-                  job: containerlogs
-                  __path__: /var/lib/docker/containers/*/*log
+            docker_sd_configs:
+              - host: unix:///var/run/docker.sock
+                refresh_interval: 5s
+            relabel_configs:
+              - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+                target_label: 'service_name'
+              - source_labels: ['__meta_docker_container_label_environment']
+                target_label: 'environment'
+              - source_labels: ['__meta_docker_container_label_service_type']
+                target_label: 'service_type'
+              - source_labels: ['__meta_docker_container_label_database_type']
+                target_label: 'database_type'
+              - source_labels: ['__meta_docker_container_label_container_group']
+                target_label: 'container_group'
+              - source_labels: ['__meta_docker_container_label_monitoring_enabled']
+                target_label: 'monitoring_enabled'
+              - source_labels: ['__meta_docker_container_name']
+                regex: '/(.*)'
+                target_label: 'container_name'
             pipeline_stages:
               - docker: {}
-              - json:
-                  expressions:
-                    output: log
-                    stream: stream
-                    attrs:
-              - json:
-                  source: attrs
-                  expressions:
-                    tag:
-              - regex:
-                  source: tag
-                  expression: (?P<container_name>(?:[^|]*))\|
-              - timestamp:
-                  source: time
-                  format: RFC3339Nano
-              - labels:
-                  stream:
-                  container_name:
-                  environment:
-                  service_type:
-                  service_name:
-                  database_type:
-                  monitoring_stack:
-              - output:
-                  source: output
         EOF
         /usr/bin/promtail -config.file=/etc/promtail/config.yml
     networks:
@@ -114,12 +104,12 @@ services:
         max-file: "3"
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=monitoring"
-      - "service.name=promtail"
-      - "monitoring.stack=observability"
-      - "monitoring.role=log-collection"
-      - "container.group=monitoring"
-      - "monitoring.enabled=true"
+      - "service_type=monitoring"
+      - "service_name=promtail"
+      - "monitoring_stack=observability"
+      - "monitoring_role=log-collection"
+      - "container_group=monitoring"
+      - "monitoring_enabled=true"
 
   grafana:
     image: grafana/grafana:latest
@@ -130,7 +120,7 @@ services:
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
       - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_FEATURE_TOGGLES_ENABLE=alertingSimplifiedRouting,alertingQueryAndExpressionsStepMode
     volumes:
       - grafana-data:/var/lib/grafana
@@ -185,13 +175,13 @@ services:
         max-file: "3"
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=monitoring"
-      - "service.name=grafana"
-      - "monitoring.stack=observability"
-      - "monitoring.role=visualization"
-      - "ui.type=web"
-      - "container.group=monitoring"
-      - "monitoring.enabled=true"
+      - "service_type=monitoring"
+      - "service_name=grafana"
+      - "monitoring_stack=observability"
+      - "monitoring_role=visualization"
+      - "ui_type=web"
+      - "container_group=monitoring"
+      - "monitoring_enabled=true"
 
 volumes:
   grafana-loki-data:

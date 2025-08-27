@@ -172,7 +172,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(count_over_time({container_name=\"qdrant-db\"} |~ \"(?i)(search|vector)\" [1m]))",
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(search|vector)\" [1m]))",
           "refId": "A"
         }
       ],
@@ -252,7 +252,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(count_over_time({container_name=\"qdrant-db\"} |~ \"(?i)(collection|index)\" [1m]))",
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(collection|index)\" [1m]))",
           "refId": "A"
         }
       ],
@@ -317,7 +317,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(count_over_time({container_name=\"qdrant-db\"} |~ \"(?i)(error|ERROR|exception)\" [5m]))",
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(error|exception)\" [5m]))",
           "refId": "A"
         }
       ],
@@ -470,8 +470,13 @@
         ],
         "query": "dev,staging,prod",
         "queryValue": "",
-        "skipUrlSync": false,
-        "type": "custom"
+        "skipUrlSync": false
+      },
+      {
+        "name": "container",
+        "type": "custom",
+        "query": "qdrant-db",
+        "current": { "text": "qdrant-db", "value": "qdrant-db", "selected": true }
       }
     ]
   },

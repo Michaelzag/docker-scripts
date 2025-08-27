@@ -407,12 +407,62 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "{container_name=\"mysql-adminer\"}",
+          "expr": "{container_name=\"mysql-db\"}",
           "refId": "A"
         }
       ],
       "title": "Adminer Logs",
       "type": "logs"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 8, "w": 10, "x": 0, "y": 26 },
+      "id": 8,
+      "title": "Log Level Distribution",
+      "type": "piechart",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "hideFrom": { "legend": false, "tooltip": false, "vis": false }
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right" },
+        "pieType": "pie",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "expr": "sum by (level) (count_over_time({container_name=\"mysql-db\"} | json | __error__=\"\" [5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 8, "w": 10, "x": 10, "y": 26 },
+      "id": 9,
+      "title": "Error Rate Trend",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate({container_name=\"mysql-db\"} |~ \"(?i)(error|exception)\" [1m])",
+          "refId": "A",
+          "legendFormat": "Error Rate"
+        }
+      ]
     }
   ],
   "refresh": "5s",
@@ -456,6 +506,17 @@
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"
+      }
+      ,
+      {
+        "name": "container",
+        "type": "query",
+        "datasource": "Loki",
+        "definition": "label_values({job=\"docker\"}, container_name)",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": { "text": "mysql-db", "value": "mysql-db", "selected": true }
       }
     ]
   },

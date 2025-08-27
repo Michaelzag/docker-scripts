@@ -27,14 +27,14 @@ services:
         max-file: "3"
     labels:
       - "environment=${ENVIRONMENT:-dev}"
-      - "service.type=database"
-      - "service.name=qdrant"
-      - "database.type=vector"
-      - "database.engine=qdrant"
-      - "database.use-case=similarity-search,embeddings"
-      - "api.protocols=http,grpc"
-      - "container.group=databases"
-      - "monitoring.enabled=true"
+      - "service_type=database"
+      - "service_name=qdrant"
+      - "database_type=vector"
+      - "database_engine=qdrant"
+      - "database_use_case=similarity-search,embeddings"
+      - "api_protocols=http,grpc"
+      - "container_group=databases"
+      - "monitoring_enabled=true"
 
 volumes:
   qdrant-storage:
