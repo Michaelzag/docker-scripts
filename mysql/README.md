@@ -13,7 +13,7 @@ docker compose up -d
 
 ### Access
 
-- **Adminer UI**: http://localhost:8080 (default)
+- **Adminer UI**: http://localhost:7080 (default)
 - **MySQL**: `localhost:3306` (default)
 - **Default credentials**: user / changeme (root / changeme)
 

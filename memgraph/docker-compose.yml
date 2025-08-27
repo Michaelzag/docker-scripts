@@ -7,7 +7,7 @@ services:
     container_name: memgraph-db
     ports:
       - "${MEMGRAPH_LOG_PORT:-7444}:7444"  # Log streaming/HTTP API
-      - "${MEMGRAPH_BOLT_PORT:-7687}:7687"  # Bolt protocol
+      - "${MEMGRAPH_BOLT_PORT:-7587}:7687"  # Bolt protocol
     networks:
       - memgraph-network
     volumes:
@@ -43,7 +43,7 @@ services:
     image: memgraph/lab:latest
     container_name: memgraph-lab
     ports:
-      - "${MEMGRAPH_LAB_PORT:-3000}:3000"
+      - "${MEMGRAPH_LAB_PORT:-7300}:3000"
     networks:
       - memgraph-network
     environment:

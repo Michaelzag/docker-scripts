@@ -5,7 +5,7 @@
       "args": [
         "mcp-neo4j-cypher",
         "--db-url",
-        "bolt://localhost:7687",
+        "bolt://localhost:7587",
         "--username",
         "memgraph",
         "--password",

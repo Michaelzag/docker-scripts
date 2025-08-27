@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
     container_name: mysql-adminer
     ports:
-      - "${ADMINER_PORT:-8080}:8080"
+      - "${ADMINER_PORT:-7080}:8080"
     networks:
       - mysql-network
     mem_limit: ${ADMINER_MEMORY_LIMIT:-256m}

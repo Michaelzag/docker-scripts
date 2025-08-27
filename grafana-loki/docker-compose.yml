@@ -12,7 +12,7 @@ services:
     container_name: grafana-loki
     mem_limit: ${LOKI_MEMORY_LIMIT:-512m}
     ports:
-      - "${LOKI_PORT:-3100}:3100"
+      - "${LOKI_PORT:-7100}:3100"
     volumes:
       - grafana-loki-data:/loki
     networks:
@@ -169,7 +169,7 @@ services:
         EOF
         /run.sh
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      - "${GRAFANA_PORT:-7000}:3000"
     networks:
       - grafana-loki-network
     healthcheck:

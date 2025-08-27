@@ -13,8 +13,8 @@ docker compose up -d
 
 ### Access
 
-- **Grafana**: http://localhost:3000 (default, anonymous access enabled)
-- **Loki API**: http://localhost:3100 (default)
+- **Grafana**: http://localhost:7000 (default, anonymous access enabled)
+- **Loki API**: http://localhost:7100 (default)
 
 ### Features
 

@@ -13,8 +13,8 @@ docker compose up -d
 
 ### Access
 
-- **Lab UI**: http://localhost:3000 (default)
-- **Bolt**: `bolt://localhost:7687` (default)
+- **Lab UI**: http://localhost:7300 (default)
+- **Bolt**: `bolt://localhost:7587` (default)
 - **Log API**: http://localhost:7444 (default)
 - **Default credentials**: memgraph / changeme
 
