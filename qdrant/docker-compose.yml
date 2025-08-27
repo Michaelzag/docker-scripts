@@ -6,8 +6,8 @@ services:
     restart: unless-stopped
     container_name: qdrant-db
     ports:
-      - "${QDRANT_HTTP_PORT:-8633}:6333"     # HTTP API
-      - "${QDRANT_GRPC_PORT:-8634}:6334"     # gRPC API
+      - "${QDRANT_HTTP_PORT:-6333}:6333"     # HTTP API
+      - "${QDRANT_GRPC_PORT:-6334}:6334"     # gRPC API
     networks:
       - qdrant-network
     volumes:
@@ -26,20 +26,15 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-qdrant-db}"
       - "environment=${ENVIRONMENT:-dev}"
       - "service.type=database"
       - "service.name=qdrant"
-      - "service.version=latest"
       - "database.type=vector"
       - "database.engine=qdrant"
       - "database.use-case=similarity-search,embeddings"
       - "api.protocols=http,grpc"
-      - "backup.frequency=daily"
-      - "backup.priority=high"
+      - "container.group=databases"
       - "monitoring.enabled=true"
-      - "team.owner=${TEAM:-platform}"
-      - "expose.ports=7333,7334"
 
 volumes:
   qdrant-storage:

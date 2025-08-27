@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "mysql-db": {
+      "command": "uvx",
+      "args": [
+        "mysql-mcp-zag",
+        "--host",
+        "localhost",
+        "--port",
+        "3306",
+        "--user",
+        "your_user",
+        "--password",
+        "your_password",
+        "--database",
+        "your_database"
+      ],
+      "disabled": false,
+      "alwaysAllow": [
+        "execute_sql"
+      ]
+    }
+  }
+}

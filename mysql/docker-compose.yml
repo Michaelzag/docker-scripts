@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     container_name: mysql-db
     ports:
-      - "${MYSQL_PORT:-8306}:3306"
+      - "${MYSQL_PORT:-3306}:3306"
     networks:
       - mysql-network
     volumes:
@@ -32,25 +32,20 @@ services:
     cap_add:
       - SYS_NICE
     labels:
-      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-mysql-db}"
       - "environment=${ENVIRONMENT:-dev}"
       - "service.type=database"
       - "service.name=mysql"
-      - "service.version=latest"
       - "database.type=relational"
       - "database.engine=mysql"
-      - "backup.frequency=daily"
-      - "backup.priority=critical"
+      - "container.group=databases"
       - "monitoring.enabled=true"
-      - "team.owner=${TEAM:-platform}"
-      - "expose.ports=8306"
 
   adminer:
     image: adminer:latest
     restart: unless-stopped
     container_name: mysql-adminer
     ports:
-      - "${ADMINER_PORT:-8880}:8080"
+      - "${ADMINER_PORT:-8080}:8080"
     networks:
       - mysql-network
     mem_limit: ${ADMINER_MEMORY_LIMIT:-256m}
@@ -70,16 +65,13 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-mysql-db}"
       - "environment=${ENVIRONMENT:-dev}"
       - "service.type=ui"
       - "service.name=adminer"
-      - "service.version=latest"
       - "ui.for=mysql"
       - "ui.type=web"
+      - "container.group=admin-tools"
       - "monitoring.enabled=true"
-      - "team.owner=${TEAM:-platform}"
-      - "expose.ports=8880"
 
 volumes:
   mysql-data:

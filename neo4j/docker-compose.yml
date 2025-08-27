@@ -6,8 +6,8 @@ services:
     restart: unless-stopped
     container_name: neo4j-db
     ports:
-      - "${NEO4J_HTTP_PORT:-8474}:7474"  # HTTP
-      - "${NEO4J_BOLT_PORT:-8487}:7687"  # Bolt
+      - "${NEO4J_HTTP_PORT:-7474}:7474"  # HTTP
+      - "${NEO4J_BOLT_PORT:-7687}:7687"  # Bolt
     networks:
       - neo4j-network
     volumes:
@@ -39,19 +39,14 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-neo4j-db}"
       - "environment=${ENVIRONMENT:-dev}"
       - "service.type=database"
       - "service.name=neo4j"
-      - "service.version=latest"
       - "database.type=graph"
       - "database.engine=neo4j"
       - "plugins.enabled=apoc,graph-data-science"
-      - "backup.frequency=daily"
-      - "backup.priority=critical"
+      - "container.group=databases"
       - "monitoring.enabled=true"
-      - "team.owner=${TEAM:-platform}"
-      - "expose.ports=7474,7687"
 
 volumes:
   neo4j-data:

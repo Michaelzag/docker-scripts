@@ -12,7 +12,7 @@ services:
     container_name: grafana-loki
     mem_limit: ${LOKI_MEMORY_LIMIT:-512m}
     ports:
-      - "${LOKI_PORT:-9710}:3100"
+      - "${LOKI_PORT:-3100}:3100"
     volumes:
       - grafana-loki-data:/loki
     networks:
@@ -29,18 +29,13 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-grafana-loki}"
       - "environment=${ENVIRONMENT:-dev}"
       - "service.type=monitoring"
       - "service.name=loki"
-      - "service.version=latest"
       - "monitoring.stack=observability"
       - "monitoring.role=log-aggregation"
-      - "backup.frequency=weekly"
-      - "backup.priority=high"
+      - "container.group=monitoring"
       - "monitoring.enabled=true"
-      - "team.owner=${TEAM:-platform}"
-      - "expose.ports=9710"
 
   promtail:
     image: grafana/promtail:latest
@@ -118,16 +113,13 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-grafana-loki}"
       - "environment=${ENVIRONMENT:-dev}"
       - "service.type=monitoring"
       - "service.name=promtail"
-      - "service.version=latest"
       - "monitoring.stack=observability"
       - "monitoring.role=log-collection"
+      - "container.group=monitoring"
       - "monitoring.enabled=true"
-      - "team.owner=${TEAM:-platform}"
-      - "expose.ports=9080"
 
   grafana:
     image: grafana/grafana:latest
@@ -136,8 +128,9 @@ services:
     mem_limit: ${GRAFANA_MEMORY_LIMIT:-512m}
     environment:
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
       - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_FEATURE_TOGGLES_ENABLE=alertingSimplifiedRouting,alertingQueryAndExpressionsStepMode
     volumes:
       - grafana-data:/var/lib/grafana
@@ -166,7 +159,7 @@ services:
         providers:
         - name: 'Grafana Dashboards'
           orgId: 1
-          folder: 'Dashboards'
+          folder: ''
           type: file
           disableDeletion: false
           updateIntervalSeconds: 10
@@ -176,7 +169,7 @@ services:
         EOF
         /run.sh
     ports:
-      - "${GRAFANA_PORT:-9700}:3000"
+      - "${GRAFANA_PORT:-3000}:3000"
     networks:
       - grafana-loki-network
     healthcheck:
@@ -191,19 +184,14 @@ services:
         max-size: "10m"
         max-file: "3"
     labels:
-      - "com.docker.compose.project=${COMPOSE_PROJECT_NAME:-grafana-loki}"
       - "environment=${ENVIRONMENT:-dev}"
       - "service.type=monitoring"
       - "service.name=grafana"
-      - "service.version=latest"
       - "monitoring.stack=observability"
       - "monitoring.role=visualization"
       - "ui.type=web"
-      - "backup.frequency=weekly"
-      - "backup.priority=medium"
+      - "container.group=monitoring"
       - "monitoring.enabled=true"
-      - "team.owner=${TEAM:-platform}"
-      - "expose.ports=9700"
 
 volumes:
   grafana-loki-data:
