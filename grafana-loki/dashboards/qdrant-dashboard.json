@@ -172,8 +172,9 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(search|vector)\" [1m]))",
-          "refId": "A"
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(search|vector|similarity)\" [1m]))",
+          "refId": "A",
+          "legendFormat": "Vector Search"
         }
       ],
       "title": "Vector Search Activity",
@@ -252,8 +253,9 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(collection|index)\" [1m]))",
-          "refId": "A"
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(collection|index|upsert|delete)\" [1m]))",
+          "refId": "A",
+          "legendFormat": "Collection Ops"
         }
       ],
       "title": "Collection Operations",
@@ -317,7 +319,7 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(error|exception)\" [5m])) or vector(0)",
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(error|exception|failed)\" [5m])) or vector(0)",
           "refId": "A"
         }
       ],
@@ -329,11 +331,254 @@
         "type": "loki",
         "uid": "Loki"
       },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "vis": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 6
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(http|api|request)\" [1m]))",
+          "refId": "A",
+          "legendFormat": "HTTP API"
+        }
+      ],
+      "title": "HTTP API Activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "vis": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 6
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(grpc|rpc)\" [1m]))",
+          "refId": "A",
+          "legendFormat": "gRPC API"
+        }
+      ],
+      "title": "gRPC API Activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "vis": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "sum(rate({container_name=\"qdrant-db\"} |~ \"(?i)(embedding|vector|dimension)\" [1m]))",
+          "refId": "A",
+          "legendFormat": "Embedding Ops"
+        }
+      ],
+      "title": "Embedding Operations",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
       "gridPos": {
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 12
       },
       "id": 5,
       "options": {
@@ -344,7 +589,7 @@
         "showLabels": false,
         "showTime": true,
         "sortOrder": "Descending",
-        "wrapLogMessage": false
+        "wrapLogMessage": true
       },
       "targets": [
         {
@@ -356,7 +601,7 @@
           "refId": "A"
         }
       ],
-      "title": "Qdrant Logs",
+      "title": "Qdrant Vector Database Logs",
       "type": "logs"
     },
     {
@@ -366,9 +611,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 18
+        "y": 24
       },
       "id": 6,
       "options": {
@@ -379,7 +624,7 @@
         "showLabels": false,
         "showTime": true,
         "sortOrder": "Descending",
-        "wrapLogMessage": false
+        "wrapLogMessage": true
       },
       "targets": [
         {
@@ -387,11 +632,11 @@
             "type": "loki",
             "uid": "Loki"
           },
-          "expr": "{container_name=\"qdrant-db\"} |~ \"(?i)(http|api|request)\"",
+          "expr": "{container_name=\"qdrant-db\"} |~ \"(?i)(http|api|request|response)\"",
           "refId": "A"
         }
       ],
-      "title": "HTTP API Activity",
+      "title": "HTTP API Logs",
       "type": "logs"
     },
     {
@@ -401,9 +646,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 18
+        "w": 8,
+        "x": 8,
+        "y": 24
       },
       "id": 7,
       "options": {
@@ -414,7 +659,7 @@
         "showLabels": false,
         "showTime": true,
         "sortOrder": "Descending",
-        "wrapLogMessage": false
+        "wrapLogMessage": true
       },
       "targets": [
         {
@@ -426,7 +671,42 @@
           "refId": "A"
         }
       ],
-      "title": "gRPC API Activity",
+      "title": "gRPC API Logs",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
+      "id": 11,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "Loki"
+          },
+          "expr": "{container_name=\"qdrant-db\"} |~ \"(?i)(error|exception|failed|warn)\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Error & Warning Logs",
       "type": "logs"
     }
   ],
@@ -437,7 +717,8 @@
     "qdrant",
     "vector",
     "database",
-    "embeddings"
+    "embeddings",
+    "similarity-search"
   ],
   "templating": {
     "list": []
@@ -450,6 +731,6 @@
   "timezone": "",
   "title": "Qdrant Vector Database",
   "uid": "qdrant-db",
-  "version": 5,
+  "version": 6,
   "weekStart": ""
 }

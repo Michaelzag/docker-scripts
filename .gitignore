@@ -25,3 +25,8 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+
+#Test Projects
+grafana-loki/dashboards/purchasing-neo4j-dashboard.json
+
