@@ -1,0 +1,180 @@
+<dashboard_creation_workflow>
+  <overview>
+    This workflow guides you through creating professional, functional Grafana dashboards
+    for Docker container monitoring, based on lessons learned from troubleshooting
+    common dashboard issues and implementing reliable monitoring solutions.
+  </overview>
+
+  <initialization_phase>
+    <step number="1">
+      <title>Discover Container Landscape</title>
+      <description>Analyze the current Docker environment to understand what containers exist</description>
+      <actions>
+        <action>Run `docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"` to see active containers</action>
+        <action>Check for docker-compose.yml files to understand service architecture</action>
+        <action>Identify container labels that can be used for filtering and grouping</action>
+        <action>Determine which containers need dedicated dashboards vs general monitoring</action>
+      </actions>
+      <validation>Confirm you have a clear picture of the container ecosystem</validation>
+    </step>
+
+    <step number="2">
+      <title>Analyze Loki Label Structure</title>
+      <description>Understand what labels are available for dashboard queries</description>
+      <actions>
+        <action>Query Loki API: `curl -s "http://localhost:7100/loki/api/v1/labels" | jq '.data[]'`</action>
+        <action>Check container name values: `curl -s "http://localhost:7100/loki/api/v1/label/container_name/values" | jq '.data[]'`</action>
+        <action>Verify service_name, environment, and other key labels are populated</action>
+        <action>Test basic queries to ensure data is flowing</action>
+      </actions>
+      <validation>Confirm labels exist and basic queries return data</validation>
+    </step>
+
+    <step number="3">
+      <title>Plan Dashboard Architecture</title>
+      <description>Design the dashboard structure based on container types and monitoring needs</description>
+      <actions>
+        <action>Group containers by function (databases, web services, monitoring, etc.)</action>
+        <action>Decide between service-specific dashboards vs universal dashboards</action>
+        <action>Plan variable hierarchy (environment → project → service → container)</action>
+        <action>Identify key metrics for each container type</action>
+      </actions>
+      <validation>Have a clear plan for dashboard organization and content</validation>
+    </step>
+  </initialization_phase>
+
+  <dashboard_creation_phase>
+    <step number="4">
+      <title>Create Dashboard Structure</title>
+      <description>Build the basic dashboard JSON with proper metadata</description>
+      <template>
+        <dashboard_skeleton>
+          <annotations>Standard Grafana annotations block</annotations>
+          <basic_metadata>editable: true, liveNow: true, style: "dark"</basic_metadata>
+          <time_settings>Default to "now-30m" to "now" for reasonable data range</time_settings>
+          <refresh_rate>Set to "15s" for production-friendly refresh</refresh_rate>
+          <tags>Use technology and purpose tags (e.g., ["mysql", "database", "logs"])</tags>
+          <uid>Use descriptive, unique identifier</uid>
+          <version>Start with version 1, increment for updates</version>
+        </dashboard_skeleton>
+      </template>
+    </step>
+
+    <step number="5">
+      <title>Implement Dynamic Variables</title>
+      <description>Create templating that automatically discovers containers</description>
+      <variable_patterns>
+        <environment_variable>
+          <query>label_values({monitoring_enabled="true"}, environment)</query>
+          <purpose>Filter by dev/staging/prod environments</purpose>
+        </environment_variable>
+        <project_variable>
+          <query>label_values({environment=~"$environment"}, compose_project)</query>
+          <purpose>Filter by docker-compose project</purpose>
+        </project_variable>
+        <service_variable>
+          <query>label_values({environment=~"$environment", compose_project=~"$compose_project"}, service_name)</query>
+          <purpose>Filter by specific services</purpose>
+        </service_variable>
+        <container_variable>
+          <query>label_values({environment=~"$environment", service_name=~"$service_name"}, container_name)</query>
+          <purpose>Filter by specific container instances</purpose>
+        </container_variable>
+      </variable_patterns>
+      <best_practices>
+        <practice>Always use includeAll: true and multi: true for flexibility</practice>
+        <practice>Set refresh: 2 for dynamic label discovery</practice>
+        <practice>Chain variables hierarchically for logical filtering</practice>
+      </best_practices>
+    </step>
+
+    <step number="6">
+      <title>Create Reliable Panel Queries</title>
+      <description>Build queries that actually work and show meaningful data</description>
+      <query_patterns>
+        <status_panel>
+          <purpose>Show if container is UP/DOWN</purpose>
+          <query>vector(1)</query>
+          <rationale>Simple, always works, shows green UP when container exists</rationale>
+        </status_panel>
+        <log_activity>
+          <purpose>Show log volume over time</purpose>
+          <query>sum(rate({container_name="container-name"} [1m]))</query>
+          <rationale>Basic rate query that works with any log volume</rationale>
+        </log_activity>
+        <error_count>
+          <purpose>Show error rate with fallback</purpose>
+          <query>sum(rate({container_name="container-name"} |~ "(?i)(error|exception)" [5m])) or vector(0)</query>
+          <rationale>Shows actual errors or 0, never "No data"</rationale>
+        </error_count>
+        <log_stream>
+          <purpose>Show actual log content</purpose>
+          <query>{container_name="container-name"}</query>
+          <rationale>Direct log stream, most reliable query type</rationale>
+        </log_stream>
+      </query_patterns>
+    </step>
+
+    <step number="7">
+      <title>Design Panel Layout</title>
+      <description>Organize panels for maximum operational value</description>
+      <layout_principles>
+        <principle>Status indicators at top for quick health check</principle>
+        <principle>Activity metrics in middle for trend analysis</principle>
+        <principle>Log streams at bottom for detailed investigation</principle>
+        <principle>Use row headers to group related panels</principle>
+        <principle>Keep panel sizes consistent and readable</principle>
+      </layout_principles>
+      <recommended_panels>
+        <essential_panels>
+          <panel>Container Status (stat panel with UP/DOWN mapping)</panel>
+          <panel>Log Activity (timeseries showing log volume)</panel>
+          <panel>Error Rate (stat panel with thresholds)</panel>
+          <panel>All Logs (logs panel for main log stream)</panel>
+        </essential_panels>
+        <optional_panels>
+          <panel>Error Logs Only (filtered logs panel)</panel>
+          <panel>Warning Logs (filtered logs panel)</panel>
+          <panel>API Activity (filtered logs for HTTP/API calls)</panel>
+        </optional_panels>
+      </recommended_panels>
+    </step>
+  </dashboard_creation_phase>
+
+  <quality_assurance_phase>
+    <step number="8">
+      <title>Apply Dashboard Best Practices</title>
+      <description>Ensure dashboard follows production standards</description>
+      <checklist>
+        <item>All stat panels show values (not "No data")</item>
+        <item>Legend formatting is clean (use legendFormat)</item>
+        <item>Refresh rate is reasonable (15s or higher)</item>
+        <item>Tags are professional and descriptive</item>
+        <item>Panel titles are clear and concise</item>
+        <item>Thresholds are set appropriately for the metrics</item>
+        <item>Time range defaults are sensible (30m-1h)</item>
+      </checklist>
+    </step>
+
+    <step number="9">
+      <title>Test Dashboard Functionality</title>
+      <description>Verify the dashboard works correctly</description>
+      <testing_steps>
+        <test>Save dashboard and restart Grafana to pick up changes</test>
+        <test>Verify all panels show data or appropriate zero values</test>
+        <test>Test variable filtering works correctly</test>
+        <test>Check that panel repeats work if implemented</test>
+        <test>Confirm dashboard loads quickly without timeouts</test>
+      </testing_steps>
+    </step>
+  </quality_assurance_phase>
+
+  <completion_criteria>
+    <criterion>Dashboard shows real operational data in all panels</criterion>
+    <criterion>No "No data" messages on stat panels</criterion>
+    <criterion>Variables work and filter data correctly</criterion>
+    <criterion>Dashboard loads within 5 seconds</criterion>
+    <criterion>Professional appearance without amateur styling</criterion>
+    <criterion>Scales to handle multiple container instances</criterion>
+  </completion_criteria>
+</dashboard_creation_workflow>

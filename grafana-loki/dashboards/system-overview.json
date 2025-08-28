@@ -134,7 +134,7 @@
       "type": "bargauge",
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
       "options": { "orientation": "horizontal", "displayMode": "gradient" },
-      "targets": [{ "expr": "topk(5, sum by (service_name) (rate({environment=~\"$environment\", container_group=~\"$container_group\"} [15m])))", "refId": "A" }]
+      "targets": [{ "expr": "topk(5, sum by (service_name) (rate({environment=~\"$environment\", container_group=~\"$container_group\"} [15m])))", "refId": "A", "legendFormat": "{{service_name}}" }]
     },
     {
       "datasource": { "type": "loki", "uid": "Loki" },

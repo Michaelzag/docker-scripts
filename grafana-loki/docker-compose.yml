@@ -15,6 +15,10 @@ services:
       - "${LOKI_PORT:-7100}:3100"
     volumes:
       - grafana-loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml -config.expand-env=true
+    environment:
+      - LOKI_REJECT_OLD_SAMPLES=false
+      - LOKI_REJECT_OLD_SAMPLES_MAX_AGE=168h
     networks:
       - grafana-loki-network
     healthcheck:

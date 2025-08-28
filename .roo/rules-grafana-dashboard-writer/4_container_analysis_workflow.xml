@@ -1,0 +1,244 @@
+<container_analysis_workflow>
+  <overview>
+    Systematic approach to analyzing Docker containers and automatically generating
+    appropriate Grafana dashboards based on container characteristics and labels.
+  </overview>
+
+  <discovery_phase>
+    <step number="1">
+      <title>System Container Discovery</title>
+      <description>Identify all containers and their characteristics</description>
+      <commands>
+        <command purpose="list_active_containers">
+          docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+        </command>
+        <command purpose="get_container_labels">
+          docker inspect CONTAINER_NAME --format '{{json .Config.Labels}}' | jq '.'
+        </command>
+        <command purpose="check_compose_projects">
+          docker ps --format "{{.Label \"com.docker.compose.project\"}}" | sort | uniq
+        </command>
+      </commands>
+      <analysis_points>
+        <point>Container naming patterns (service-db, service-web, etc.)</point>
+        <point>Image types (official vs custom)</point>
+        <point>Port mappings (database ports, web ports, etc.)</point>
+        <point>Health status (healthy vs unhealthy containers)</point>
+        <point>Compose project groupings</point>
+      </analysis_points>
+    </step>
+
+    <step number="2">
+      <title>Loki Label Analysis</title>
+      <description>Understand what labels are available for dashboard queries</description>
+      <commands>
+        <command purpose="check_available_labels">
+          curl -s "http://localhost:7100/loki/api/v1/labels" | jq '.data[]'
+        </command>
+        <command purpose="get_container_names">
+          curl -s "http://localhost:7100/loki/api/v1/label/container_name/values" | jq '.data[]'
+        </command>
+        <command purpose="get_service_types">
+          curl -s "http://localhost:7100/loki/api/v1/label/service_type/values" | jq '.data[]'
+        </command>
+        <command purpose="get_environments">
+          curl -s "http://localhost:7100/loki/api/v1/label/environment/values" | jq '.data[]'
+        </command>
+      </commands>
+      <validation_queries>
+        <query purpose="test_basic_connectivity">
+          curl -s "http://localhost:7100/loki/api/v1/query?query={container_name=\"CONTAINER_NAME\"}" | jq '.status'
+        </query>
+        <query purpose="verify_log_flow">
+          Check that status returns "success" and data exists
+        </query>
+      </validation_queries>
+    </step>
+
+    <step number="3">
+      <title>Container Classification</title>
+      <description>Categorize containers to determine appropriate dashboard types</description>
+      <classification_logic>
+        <database_containers>
+          <criteria>
+            <label_match>service_type=database</label_match>
+            <name_pattern>*-db, mysql*, postgres*, neo4j*, memgraph*, qdrant*</name_pattern>
+            <port_pattern>3306, 5432, 7474, 7687, 6333, etc.</port_pattern>
+          </criteria>
+          <dashboard_approach>Service-specific dashboard with database-focused panels</dashboard_approach>
+        </database_containers>
+
+        <web_services>
+          <criteria>
+            <label_match>service_type=web|api|ui</label_match>
+            <name_pattern>*-web, *-api, *-ui, nginx*, apache*</name_pattern>
+            <port_pattern>80, 443, 8080, 3000, etc.</port_pattern>
+          </criteria>
+          <dashboard_approach>Web service dashboard with HTTP-focused panels</dashboard_approach>
+        </web_services>
+
+        <monitoring_services>
+          <criteria>
+            <label_match>service_type=monitoring</label_match>
+            <name_pattern>grafana*, prometheus*, loki*, promtail*</name_pattern>
+          </criteria>
+          <dashboard_approach>Monitoring service dashboard with system health focus</dashboard_approach>
+        </monitoring_services>
+
+        <admin_tools>
+          <criteria>
+            <label_match>service_type=ui, container_group=admin-tools</label_match>
+            <name_pattern>*-admin*, adminer*, phpmyadmin*</name_pattern>
+          </criteria>
+          <dashboard_approach>Simple dashboard focusing on tool availability and logs</dashboard_approach>
+        </admin_tools>
+
+        <unknown_containers>
+          <criteria>
+            <fallback>Any container not matching above patterns</fallback>
+          </criteria>
+          <dashboard_approach>Generic dashboard with basic monitoring panels</dashboard_approach>
+        </unknown_containers>
+      </classification_logic>
+    </step>
+  </discovery_phase>
+
+  <dashboard_generation_phase>
+    <step number="4">
+      <title>Generate Dashboard Structure</title>
+      <description>Create appropriate dashboard based on container classification</description>
+      <generation_logic>
+        <for_each_container_type>
+          <action>Select appropriate template from dashboard_templates</action>
+          <action>Customize panel queries for specific container characteristics</action>
+          <action>Set up variables based on container label structure</action>
+          <action>Configure panel layout for optimal operational workflow</action>
+        </for_each_container_type>
+      </generation_logic>
+      <customization_points>
+        <point>Container name substitution in queries</point>
+        <point>Service-specific log filters</point>
+        <point>Appropriate thresholds based on container type</point>
+        <point>Panel titles reflecting container purpose</point>
+      </customization_points>
+    </step>
+
+    <step number="5">
+      <title>Implement Reliable Queries</title>
+      <description>Apply lessons learned to create queries that actually work</description>
+      <query_implementation>
+        <status_queries>
+          <approach>Use vector(1) for simple UP indication</approach>
+          <rationale>More reliable than complex count() operations</rationale>
+        </status_queries>
+        
+        <activity_queries>
+          <approach>Use basic rate() functions: sum(rate({container_name="name"} [1m]))</approach>
+          <rationale>Simple rate calculations work with any log volume</rationale>
+        </activity_queries>
+        
+        <error_queries>
+          <approach>Always include fallback: sum(rate({} |~ "error" [5m])) or vector(0)</approach>
+          <rationale>Shows 0 instead of "No data" when no errors found</rationale>
+        </error_queries>
+        
+        <log_queries>
+          <approach>Direct log streams: {container_name="name"}</approach>
+          <rationale>Most reliable query type, always works if container exists</rationale>
+        </log_queries>
+      </query_implementation>
+    </step>
+
+    <step number="6">
+      <title>Apply Professional Styling</title>
+      <description>Ensure dashboard meets production standards</description>
+      <styling_checklist>
+        <item>Clean panel titles without fluff words</item>
+        <item>Appropriate color thresholds for each metric type</item>
+        <item>Consistent panel sizing and layout</item>
+        <item>Professional tags (technology + purpose only)</item>
+        <item>Clean legend formatting with legendFormat</item>
+        <item>Reasonable refresh rates (15s minimum)</item>
+        <item>Sensible default time ranges</item>
+      </styling_checklist>
+    </step>
+  </dashboard_generation_phase>
+
+  <batch_generation_workflow>
+    <step number="7">
+      <title>Generate Multiple Dashboards</title>
+      <description>Create dashboards for all discovered containers efficiently</description>
+      <batch_approach>
+        <phase name="discovery">
+          <action>Run container discovery commands</action>
+          <action>Query Loki for available labels and container names</action>
+          <action>Classify all containers by type</action>
+        </phase>
+        
+        <phase name="generation">
+          <action>For each container type, generate appropriate dashboard</action>
+          <action>Use templates and substitute container-specific values</action>
+          <action>Ensure unique UIDs and appropriate file names</action>
+        </phase>
+        
+        <phase name="validation">
+          <action>Test each generated dashboard for query functionality</action>
+          <action>Verify no "No data" issues on stat panels</action>
+          <action>Confirm professional appearance and naming</action>
+        </phase>
+      </batch_approach>
+    </step>
+
+    <step number="8">
+      <title>Create Universal Auto-Discovery Dashboard</title>
+      <description>Generate a master dashboard that shows all containers dynamically</description>
+      <auto_discovery_features>
+        <feature>Dynamic variable hierarchy (environment → project → service → container)</feature>
+        <feature>Container activity matrix showing all active containers</feature>
+        <feature>Error distribution across all containers</feature>
+        <feature>Top N most active containers</feature>
+        <feature>System-wide error rates</feature>
+        <feature>Filtered log streams based on variable selection</feature>
+      </auto_discovery_features>
+    </step>
+  </batch_generation_workflow>
+
+  <quality_assurance>
+    <validation_steps>
+      <step>Verify all generated dashboards load without errors</step>
+      <step>Confirm stat panels show values (not "No data")</step>
+      <step>Test variable filtering works correctly</step>
+      <step>Check that legends are clean and readable</step>
+      <step>Validate refresh rates are production-appropriate</step>
+      <step>Ensure dashboard names and UIDs are unique</step>
+    </validation_steps>
+
+    <performance_checks>
+      <check>Dashboard loads within 5 seconds</check>
+      <check>Queries complete without timeouts</check>
+      <check>No excessive load on Loki from aggressive refresh</check>
+      <check>Variables populate within 2 seconds</check>
+    </performance_checks>
+  </quality_assurance>
+
+  <maintenance_considerations>
+    <consideration name="version_management">
+      <description>Increment dashboard versions when making changes</description>
+      <process>Edit JSON → increment version → restart Grafana</process>
+    </consideration>
+
+    <consideration name="label_dependencies">
+      <description>Ensure container labels support dashboard queries</description>
+      <required_labels>environment, service_type, service_name, container_group, monitoring_enabled</required_labels>
+    </consideration>
+
+    <consideration name="scalability">
+      <description>Design dashboards to handle multiple instances</description>
+      <techniques>
+        <technique>Use variable-driven queries</technique>
+        <technique>Implement panel repeats for multi-instance</technique>
+        <technique>Design for horizontal scaling</technique>
+      </techniques>
+    </consideration>
+  </maintenance_considerations>
+</container_analysis_workflow>

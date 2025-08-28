@@ -1,0 +1,335 @@
+<complete_examples>
+  <overview>
+    Complete, working examples of dashboard generation for different container types,
+    demonstrating the full workflow from container discovery to functional dashboard.
+  </overview>
+
+  <example name="database_container_dashboard">
+    <scenario>Creating a dashboard for a MySQL database container</scenario>
+    <container_analysis>
+      <container_info>
+        <name>mysql-db</name>
+        <image>mysql:latest</image>
+        <labels>
+          <label>environment=dev</label>
+          <label>service_type=database</label>
+          <label>service_name=mysql</label>
+          <label>database_type=mysql</label>
+          <label>container_group=databases</label>
+          <label>monitoring_enabled=true</label>
+        </labels>
+      </container_info>
+    </container_analysis>
+
+    <dashboard_implementation>
+      <filename>mysql-dashboard.json</filename>
+      <key_panels>
+        <panel name="MySQL Status">
+          <query>vector(1)</query>
+          <purpose>Simple UP indicator</purpose>
+        </panel>
+        <panel name="Log Activity">
+          <query>sum(rate({container_name="mysql-db"} [1m]))</query>
+          <purpose>Show database activity level</purpose>
+        </panel>
+        <panel name="Errors (5m)">
+          <query>sum(rate({container_name="mysql-db"} |~ "(?i)(error|ERROR)" [5m])) or vector(0)</query>
+          <purpose>Error monitoring with zero fallback</purpose>
+        </panel>
+        <panel name="MySQL Logs">
+          <query>{container_name="mysql-db"}</query>
+          <purpose>Main log investigation</purpose>
+        </panel>
+        <panel name="Error Logs Only">
+          <query>{container_name="mysql-db"} |~ "(?i)(error|ERROR)"</query>
+          <purpose>Focused error investigation</purpose>
+        </panel>
+      </key_panels>
+      <variables>None (direct targeting for reliability)</variables>
+      <styling>
+        <title>MySQL Database</title>
+        <uid>mysql-db</uid>
+        <tags>["mysql", "database", "logs"]</tags>
+        <refresh>15s</refresh>
+      </styling>
+    </dashboard_implementation>
+  </example>
+
+  <example name="auto_discovery_dashboard">
+    <scenario>Creating a universal dashboard that discovers all containers</scenario>
+    <approach>Dynamic variables with broad container coverage</approach>
+    
+    <dashboard_implementation>
+      <filename>auto-discovery.json</filename>
+      <key_panels>
+        <panel name="Total Active Containers">
+          <query>count(count by (container_name) (rate({container_name=~".+"} [5m])))</query>
+          <purpose>System-wide container count</purpose>
+        </panel>
+        <panel name="Containers by Project">
+          <query>count by (compose_project) (count by (container_name, compose_project) (rate({container_name=~".+"} [5m])))</query>
+          <purpose>Project distribution overview</purpose>
+        </panel>
+        <panel name="Top 10 Most Active Containers">
+          <query>topk(10, sum by (container_name) (rate({container_name=~".+"} [5m])))</query>
+          <legendFormat>{{container_name}}</legendFormat>
+          <purpose>Identify noisy containers</purpose>
+        </panel>
+        <panel name="Error Distribution by Container">
+          <query>topk(10, sum by (container_name) (rate({container_name=~".+"} |~ "(?i)(error|exception)" [5m])))</query>
+          <legendFormat>{{container_name}}</legendFormat>
+          <purpose>Identify problematic containers</purpose>
+        </panel>
+        <panel name="Selected Container Logs">
+          <query>{container_name=~"$container_name"}</query>
+          <purpose>Variable-driven log investigation</purpose>
+        </panel>
+      </key_panels>
+      <variables>
+        <variable name="environment">label_values({}, environment)</variable>
+        <variable name="compose_project">label_values({environment=~"$environment"}, compose_project)</variable>
+        <variable name="service_type">label_values({environment=~"$environment", compose_project=~"$compose_project"}, service_type)</variable>
+        <variable name="container_name">label_values({environment=~"$environment", service_type=~"$service_type"}, container_name)</variable>
+      </variables>
+    </dashboard_implementation>
+  </example>
+
+  <example name="batch_dashboard_generation">
+    <scenario>Generating dashboards for all containers found on system</scenario>
+    <workflow>
+      <step number="1">
+        <title>Container Discovery</title>
+        <commands>
+          <command>docker ps --format "{{.Names}}" | grep -v "grafana\|loki\|promtail"</command>
+          <command>curl -s "http://localhost:7100/loki/api/v1/label/container_name/values" | jq -r '.data[]'</command>
+        </commands>
+        <output>List of containers needing dashboards</output>
+      </step>
+
+      <step number="2">
+        <title>Container Classification</title>
+        <process>
+          <action>For each container, check labels: docker inspect CONTAINER --format '{{json .Config.Labels}}'</action>
+          <action>Classify by service_type: database, web, monitoring, ui</action>
+          <action>Determine appropriate dashboard template</action>
+        </process>
+      </step>
+
+      <step number="3">
+        <title>Dashboard Generation</title>
+        <generation_logic>
+          <for_database_containers>
+            <template>Use database dashboard template</template>
+            <customizations>
+              <customize>Replace CONTAINER_NAME with actual name</customize>
+              <customize>Add database-specific log filters</customize>
+              <customize>Set appropriate error thresholds</customize>
+              <customize>Configure database-specific tags</customize>
+            </customizations>
+          </for_database_containers>
+
+          <for_web_containers>
+            <template>Use web service dashboard template</template>
+            <customizations>
+              <customize>Add HTTP-specific log filters</customize>
+              <customize>Include response code monitoring</customize>
+              <customize>Set web service thresholds</customize>
+            </customizations>
+          </for_web_containers>
+
+          <for_unknown_containers>
+            <template>Use generic dashboard template</template>
+            <customizations>
+              <customize>Basic status and log monitoring only</customize>
+              <customize>Generic error filtering</customize>
+              <customize>Conservative thresholds</customize>
+            </customizations>
+          </for_unknown_containers>
+        </generation_logic>
+      </step>
+
+      <step number="4">
+        <title>Batch File Creation</title>
+        <process>
+          <action>Generate JSON file for each container</action>
+          <action>Use naming convention: container-name-dashboard.json</action>
+          <action>Ensure unique UIDs for each dashboard</action>
+          <action>Set version 1 for all new dashboards</action>
+        </process>
+      </step>
+
+      <step number="5">
+        <title>Validation and Deployment</title>
+        <validation>
+          <check>Verify JSON syntax is valid</check>
+          <check>Ensure no duplicate UIDs</check>
+          <check>Test sample queries work</check>
+        </validation>
+        <deployment>
+          <action>Restart Grafana: docker compose restart grafana</action>
+          <action>Wait 30 seconds for provisioning</action>
+          <action>Check all dashboards appear in Grafana</action>
+          <action>Spot-check that panels show data</action>
+        </deployment>
+      </step>
+    </workflow>
+  </example>
+
+  <example name="handling_problematic_containers">
+    <scenario>Dealing with containers that cause issues (like code-indexing with old timestamps)</scenario>
+    <problem_identification>
+      <symptoms>
+        <symptom>Loki logs showing "timestamp too old" errors</symptom>
+        <symptom>Promtail batch send failures</symptom>
+        <symptom>High error rates in monitoring logs</symptom>
+      </symptoms>
+      <investigation>
+        <step>Identify problematic container from error messages</step>
+        <step>Check if container has old log files</step>
+        <step>Determine if container is essential for monitoring</step>
+      </investigation>
+    </problem_identification>
+
+    <solution_approaches>
+      <approach name="exclude_from_monitoring">
+        <when_to_use>Container is not essential for operational monitoring</when_to_use>
+        <implementation>
+          <step>Add label to container: monitoring_enabled=false</step>
+          <step>Update Promtail config to exclude: {monitoring_enabled!="false"}</step>
+          <step>Restart Promtail to apply filter</step>
+        </implementation>
+      </approach>
+
+      <approach name="fix_timestamp_handling">
+        <when_to_use>Container is important but has timestamp issues</when_to_use>
+        <implementation>
+          <step>Configure Loki to accept older logs</step>
+          <step>Set LOKI_REJECT_OLD_SAMPLES=false</step>
+          <step>Set LOKI_REJECT_OLD_SAMPLES_MAX_AGE=168h</step>
+          <step>Restart Loki to apply configuration</step>
+        </implementation>
+      </approach>
+
+      <approach name="create_specialized_dashboard">
+        <when_to_use>Container needs monitoring despite issues</when_to_use>
+        <implementation>
+          <step>Create dashboard with error-tolerant queries</step>
+          <step>Focus on recent logs only</step>
+          <step>Include timestamp error monitoring</step>
+          <step>Add alerts for persistent issues</step>
+        </implementation>
+      </approach>
+    </solution_approaches>
+  </example>
+
+  <workflow_automation_example>
+    <scenario>Creating a script to auto-generate dashboards for new containers</scenario>
+    <script_approach>
+      <discovery_script><![CDATA[
+#!/bin/bash
+# Auto-generate Grafana dashboards for discovered containers
+
+echo "Discovering containers..."
+CONTAINERS=$(docker ps --format "{{.Names}}" | grep -v "grafana\|loki\|promtail")
+
+for container in $CONTAINERS; do
+    echo "Analyzing container: $container"
+    
+    # Get container labels
+    LABELS=$(docker inspect $container --format '{{json .Config.Labels}}')
+    SERVICE_TYPE=$(echo $LABELS | jq -r '.service_type // "unknown"')
+    
+    # Determine dashboard type
+    case $SERVICE_TYPE in
+        "database")
+            echo "Creating database dashboard for $container"
+            # Generate database-specific dashboard
+            ;;
+        "web"|"api"|"ui")
+            echo "Creating web service dashboard for $container"
+            # Generate web service dashboard
+            ;;
+        *)
+            echo "Creating generic dashboard for $container"
+            # Generate generic dashboard
+            ;;
+    esac
+done
+
+echo "Restarting Grafana to load new dashboards..."
+cd grafana-loki && docker compose restart grafana
+      ]]></script_approach>
+    </script_approach>
+
+    <template_substitution>
+      <process>
+        <step>Load appropriate template based on container type</step>
+        <step>Replace CONTAINER_NAME placeholders with actual names</step>
+        <step>Substitute SERVICE_TYPE specific filters</step>
+        <step>Generate unique UID based on container name</step>
+        <step>Set appropriate tags based on container characteristics</step>
+        <step>Write JSON file to dashboards directory</step>
+      </process>
+    </template_substitution>
+  </workflow_automation_example>
+
+  <integration_patterns>
+    <pattern name="with_existing_monitoring">
+      <description>Integrating generated dashboards with existing monitoring setup</description>
+      <considerations>
+        <consideration>Avoid duplicate monitoring of same containers</consideration>
+        <consideration>Maintain consistent variable naming across dashboards</consideration>
+        <consideration>Use shared tag taxonomy for dashboard organization</consideration>
+        <consideration>Coordinate refresh rates to avoid system overload</consideration>
+      </considerations>
+    </pattern>
+
+    <pattern name="for_public_repositories">
+      <description>Creating dashboards suitable for public repository distribution</description>
+      <requirements>
+        <requirement>Work with minimal configuration</requirement>
+        <requirement>Handle unknown container types gracefully</requirement>
+        <requirement>Provide clear documentation and examples</requirement>
+        <requirement>Use conservative resource settings</requirement>
+      </requirements>
+      <implementation>
+        <step>Focus on auto-discovery dashboards</step>
+        <step>Include comprehensive variable hierarchies</step>
+        <step>Provide fallback values for all metrics</step>
+        <step>Document required container labels</step>
+        <step>Include troubleshooting guide</step>
+      </implementation>
+    </pattern>
+  </integration_patterns>
+
+  <success_metrics>
+    <metric name="functional_reliability">
+      <measurement>All panels show data or appropriate zero values</measurement>
+      <target>100% of panels functional</target>
+    </metric>
+
+    <metric name="user_experience">
+      <measurement>Dashboard loads within 5 seconds</measurement>
+      <target>Sub-5 second load times</target>
+    </metric>
+
+    <metric name="operational_value">
+      <measurement>Dashboards provide actionable insights for troubleshooting</measurement>
+      <indicators>
+        <indicator>Error logs are easily accessible</indicator>
+        <indicator>Activity trends are visible</indicator>
+        <indicator>Container health is immediately apparent</indicator>
+      </indicators>
+    </metric>
+
+    <metric name="maintainability">
+      <measurement>Dashboard updates work without volume removal</measurement>
+      <target>File-based updates work 100% of the time</target>
+    </metric>
+
+    <metric name="scalability">
+      <measurement>Dashboards handle multiple container instances</measurement>
+      <target>Support 10+ instances without performance degradation</target>
+    </metric>
+  </success_metrics>
+</complete_examples>

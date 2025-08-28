@@ -1,0 +1,237 @@
+<dashboard_best_practices>
+  <overview>
+    Best practices for creating reliable, professional Grafana dashboards based on
+    real-world troubleshooting experience and production requirements.
+  </overview>
+
+  <critical_gotchas>
+    <gotcha category="query_reliability">
+      <problem>"No data" appearing on stat panels when there should be zero values</problem>
+      <cause>rate() and count_over_time() functions return empty results when no matches found</cause>
+      <solution>Always add "or vector(0)" fallback to show 0 instead of empty</solution>
+      <example>
+        <bad>sum(rate({container_name="mysql"} |~ "error" [5m]))</bad>
+        <good>sum(rate({container_name="mysql"} |~ "error" [5m])) or vector(0)</good>
+      </example>
+    </gotcha>
+
+    <gotcha category="legend_formatting">
+      <problem>Ugly legends showing {container_name="grafana-loki"} instead of clean names</problem>
+      <cause>Grafana shows raw label syntax by default</cause>
+      <solution>Use legendFormat to extract clean names</solution>
+      <example>
+        <bad>"expr": "sum by (container_name) (rate({} [5m]))"</bad>
+        <good>"expr": "sum by (container_name) (rate({} [5m]))", "legendFormat": "{{container_name}}"</good>
+      </example>
+    </gotcha>
+
+    <gotcha category="label_alignment">
+      <problem>Dashboard queries don't match container labels</problem>
+      <cause>Containers use database_type="relational" but queries expect database_type="mysql"</cause>
+      <solution>Align container labels with dashboard expectations</solution>
+      <example>
+        <container_label>database_type=mysql</container_label>
+        <dashboard_query>database_type="mysql"</dashboard_query>
+      </example>
+    </gotcha>
+
+    <gotcha category="variable_complexity">
+      <problem>Complex variable chains causing query failures</problem>
+      <cause>Too many dependent variables create fragile query dependencies</cause>
+      <solution>Start simple, add complexity only when needed</solution>
+      <approach>
+        <simple>Direct container targeting: {container_name="mysql-db"}</simple>
+        <advanced>Variable chains: {environment=~"$environment", service_name=~"$service_name"}</advanced>
+      </approach>
+    </gotcha>
+
+    <gotcha category="provisioning_conflicts">
+      <problem>Dashboard changes not appearing after file edits</problem>
+      <cause>Grafana caches dashboards in database, conflicts with file-based provisioning</cause>
+      <solution>Proper provisioning configuration and version management</solution>
+      <config>
+        <setting>allowUiUpdates: false</setting>
+        <setting>updateIntervalSeconds: 5</setting>
+        <setting>disableDeletion: true (prevents accidental deletion)</setting>
+      </config>
+    </gotcha>
+
+    <gotcha category="refresh_rates">
+      <problem>Aggressive refresh rates causing performance issues</problem>
+      <cause>5-10s refresh creates excessive load on Loki</cause>
+      <solution>Use 15s or higher refresh rates for production</solution>
+      <rationale>Logs don't change fast enough to warrant sub-15s refresh</rationale>
+    </gotcha>
+  </critical_gotchas>
+
+  <query_best_practices>
+    <practice category="reliability">
+      <rule>Always prefer simple queries over complex aggregations</rule>
+      <rationale>Simple queries are more reliable and easier to debug</rationale>
+      <examples>
+        <reliable>sum(rate({container_name="mysql"} [1m]))</reliable>
+        <unreliable>avg_over_time(sum(rate({container_name="mysql"} [1m]))[5m:])</unreliable>
+      </examples>
+    </practice>
+
+    <practice category="fallbacks">
+      <rule>Include fallback values for all metric queries</rule>
+      <patterns>
+        <pattern>rate queries: "or vector(0)"</pattern>
+        <pattern>count queries: "or vector(0)"</pattern>
+        <pattern>status queries: use "vector(1)" for simple UP indication</pattern>
+      </patterns>
+    </practice>
+
+    <practice category="filtering">
+      <rule>Use direct container name targeting when possible</rule>
+      <rationale>More reliable than complex label filtering</rationale>
+      <when_to_use>
+        <simple_case>Single container monitoring</simple_case>
+        <complex_case>Multi-environment, multi-instance setups</complex_case>
+      </when_to_use>
+    </practice>
+
+    <practice category="time_ranges">
+      <rule>Use appropriate time ranges for different query types</rule>
+      <guidelines>
+        <rate_queries>[1m] for activity, [5m] for errors</rate_queries>
+        <count_queries>[5m] for stability</count_queries>
+        <log_queries>No time range needed for log streams</log_queries>
+      </guidelines>
+    </practice>
+  </query_best_practices>
+
+  <panel_design_principles>
+    <principle name="operational_focus">
+      <description>Prioritize actionable information over decorative visualizations</description>
+      <essential_panels>
+        <panel>Status indicators (UP/DOWN)</panel>
+        <panel>Error rates and counts</panel>
+        <panel>Log activity trends</panel>
+        <panel>Actual log streams for investigation</panel>
+      </essential_panels>
+      <avoid>
+        <panel>Complex heatmaps that don't provide clear insights</panel>
+        <panel>Fancy gauges that don't help with troubleshooting</panel>
+        <panel>Correlation charts that are hard to interpret</panel>
+      </avoid>
+    </principle>
+
+    <principle name="visual_hierarchy">
+      <description>Organize panels in logical order for operational workflow</description>
+      <layout_order>
+        <section>Health Overview (status, error rates)</section>
+        <section>Activity Analysis (trends, top containers)</section>
+        <section>Detailed Investigation (log streams, filtered logs)</section>
+      </layout_order>
+    </principle>
+
+    <principle name="professional_styling">
+      <description>Maintain clean, professional appearance</description>
+      <guidelines>
+        <titles>Clear, concise, no marketing fluff</titles>
+        <colors>Use default Grafana color schemes</colors>
+        <thresholds>Set meaningful thresholds based on actual usage</thresholds>
+        <legends>Always use legendFormat for clean display</legends>
+      </guidelines>
+    </principle>
+  </panel_design_principles>
+
+  <container_analysis_patterns>
+    <pattern type="database_containers">
+      <identification>
+        <label>service_type=database</label>
+        <label>database_type=mysql|postgres|neo4j|etc</label>
+      </identification>
+      <key_metrics>
+        <metric>Connection status</metric>
+        <metric>Query activity (if logs contain query info)</metric>
+        <metric>Error rates</metric>
+        <metric>Transaction logs</metric>
+      </key_metrics>
+      <useful_filters>
+        <filter>|~ "(?i)(query|select|insert|update|delete)"</filter>
+        <filter>|~ "(?i)(error|exception|failed)"</filter>
+        <filter>|~ "(?i)(connection|connect|disconnect)"</filter>
+      </useful_filters>
+    </pattern>
+
+    <pattern type="web_services">
+      <identification>
+        <label>service_type=web|api|ui</label>
+      </identification>
+      <key_metrics>
+        <metric>HTTP request rates</metric>
+        <metric>Response codes</metric>
+        <metric>Error rates</metric>
+        <metric>Performance metrics</metric>
+      </key_metrics>
+      <useful_filters>
+        <filter>|~ "(?i)(GET|POST|PUT|DELETE)"</filter>
+        <filter>|~ "(?i)(200|404|500|error)"</filter>
+        <filter>|~ "(?i)(request|response|http)"</filter>
+      </useful_filters>
+    </pattern>
+
+    <pattern type="monitoring_services">
+      <identification>
+        <label>service_type=monitoring</label>
+        <label>container_group=monitoring</label>
+      </identification>
+      <key_metrics>
+        <metric>Service health</metric>
+        <metric>Data ingestion rates</metric>
+        <metric>Storage usage</metric>
+        <metric>System errors</metric>
+      </key_metrics>
+      <useful_filters>
+        <filter>|~ "(?i)(ingestion|storage|memory)"</filter>
+        <filter>|~ "(?i)(error|warn|failed)"</filter>
+      </useful_filters>
+    </pattern>
+
+    <pattern type="unknown_containers">
+      <identification>
+        <fallback>Any container not matching known patterns</fallback>
+      </identification>
+      <approach>
+        <step>Create generic monitoring with basic panels</step>
+        <step>Focus on log streams and basic activity</step>
+        <step>Avoid service-specific filters until log patterns are understood</step>
+      </approach>
+      <safe_panels>
+        <panel>Container status</panel>
+        <panel>Log activity</panel>
+        <panel>All logs</panel>
+        <panel>Error logs (generic error filter)</panel>
+      </safe_panels>
+    </pattern>
+  </container_analysis_patterns>
+
+  <common_mistakes>
+    <mistake>
+      <description>Using count(count by()) for status panels</description>
+      <why_problematic>Complex and unreliable, often returns "No data"</why_problematic>
+      <correct_approach>Use vector(1) for simple UP indication</correct_approach>
+    </mistake>
+
+    <mistake>
+      <description>Overly aggressive refresh rates (5s or less)</description>
+      <why_problematic>Creates unnecessary load on Loki and poor user experience</why_problematic>
+      <correct_approach>Use 15s or 30s for production dashboards</correct_approach>
+    </mistake>
+
+    <mistake>
+      <description>Complex templating on first iteration</description>
+      <why_problematic>Creates fragile dependencies that are hard to debug</why_problematic>
+      <correct_approach>Start with direct queries, add variables incrementally</correct_approach>
+    </mistake>
+
+    <mistake>
+      <description>Not testing queries before building panels</description>
+      <why_problematic>Results in dashboards full of "No data" panels</why_problematic>
+      <correct_approach>Test queries via Loki API or Grafana Explore first</correct_approach>
+    </mistake>
+  </common_mistakes>
+</dashboard_best_practices>

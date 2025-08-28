@@ -1,0 +1,223 @@
+<troubleshooting_guide>
+  <overview>
+    Common issues encountered when creating Grafana dashboards and their solutions,
+    based on real troubleshooting experience from dashboard development sessions.
+  </overview>
+
+  <common_issues>
+    <issue category="no_data_panels">
+      <symptoms>
+        <symptom>Stat panels showing "No data" instead of values</symptom>
+        <symptom>Graphs appearing empty despite containers running</symptom>
+        <symptom>Variables not populating with values</symptom>
+      </symptoms>
+      <root_causes>
+        <cause>Query functions returning empty results instead of zero</cause>
+        <cause>Label mismatches between container labels and dashboard queries</cause>
+        <cause>Complex variable dependencies causing query failures</cause>
+        <cause>Incorrect Loki API endpoints or datasource configuration</cause>
+      </root_causes>
+      <diagnostic_steps>
+        <step>Check Loki connectivity: curl -s "http://localhost:7100/ready"</step>
+        <step>Verify container names in Loki: curl -s "http://localhost:7100/loki/api/v1/label/container_name/values"</step>
+        <step>Test basic query: {container_name="CONTAINER_NAME"} in Grafana Explore</step>
+        <step>Check container labels: docker inspect CONTAINER_NAME --format '{{json .Config.Labels}}'</step>
+      </diagnostic_steps>
+      <solutions>
+        <solution>Add "or vector(0)" to all rate/count queries</solution>
+        <solution>Use vector(1) for simple status indicators</solution>
+        <solution>Align container labels with dashboard query expectations</solution>
+        <solution>Simplify variable hierarchies to reduce dependencies</solution>
+        <solution>Test queries in Grafana Explore before adding to dashboards</solution>
+      </solutions>
+    </issue>
+
+    <issue category="dashboard_not_updating">
+      <symptoms>
+        <symptom>Dashboard changes not appearing after file edits</symptom>
+        <symptom>Old dashboard versions persisting</symptom>
+        <symptom>Need to remove volumes to see changes</symptom>
+      </symptoms>
+      <root_causes>
+        <cause>Grafana caching dashboards in database</cause>
+        <cause>Version conflicts between file and database</cause>
+        <cause>Incorrect provisioning configuration</cause>
+        <cause>allowUiUpdates causing conflicts</cause>
+      </root_causes>
+      <solutions>
+        <solution>Set allowUiUpdates: false in provisioning config</solution>
+        <solution>Increment dashboard version numbers when making changes</solution>
+        <solution>Use updateIntervalSeconds: 5 for faster change detection</solution>
+        <solution>Restart Grafana container after changes: docker compose restart grafana</solution>
+      </solutions>
+      <prevention>
+        <practice>Always increment version when editing dashboards</practice>
+        <practice>Use consistent provisioning configuration</practice>
+        <practice>Test changes in development before production</practice>
+      </prevention>
+    </issue>
+
+    <issue category="ugly_legends">
+      <symptoms>
+        <symptom>Legends showing {container_name="grafana-loki"} instead of clean names</symptom>
+        <symptom>Bar charts and pie charts with technical label syntax</symptom>
+      </symptoms>
+      <root_causes>
+        <cause>Grafana displays raw label syntax by default</cause>
+        <cause>Missing legendFormat configuration</cause>
+      </root_causes>
+      <solutions>
+        <solution>Add "legendFormat": "{{container_name}}" to all queries</solution>
+        <solution>Use "{{service_name}}" for service-level aggregations</solution>
+        <solution>Customize legend format for specific use cases</solution>
+      </solutions>
+      <examples>
+        <clean_container_legend>"legendFormat": "{{container_name}}"</clean_container_legend>
+        <clean_service_legend>"legendFormat": "{{service_name}}"</clean_service_legend>
+        <custom_legend>"legendFormat": "{{service_name}} ({{environment}})"</custom_legend>
+      </examples>
+    </issue>
+
+    <issue category="performance_problems">
+      <symptoms>
+        <symptom>Dashboards loading slowly</symptom>
+        <symptom>Loki showing high query load</symptom>
+        <symptom>Browser becoming unresponsive</symptom>
+      </symptoms>
+      <root_causes>
+        <cause>Aggressive refresh rates (5s or less)</cause>
+        <cause>Complex queries with multiple aggregations</cause>
+        <cause>Too many panels on single dashboard</cause>
+        <cause>Long time ranges with high-resolution queries</cause>
+      </root_causes>
+      <solutions>
+        <solution>Set refresh to 15s minimum for production</solution>
+        <solution>Simplify queries to basic rate() and count() functions</solution>
+        <solution>Limit dashboards to 10-15 panels maximum</solution>
+        <solution>Use appropriate time ranges (30m-1h default)</solution>
+        <solution>Avoid sub-second step intervals in queries</solution>
+      </solutions>
+    </issue>
+
+    <issue category="container_health_problems">
+      <symptoms>
+        <symptom>Containers showing as "unhealthy" in docker ps</symptom>
+        <symptom>Intermittent log flow</symptom>
+        <symptom>Connection errors in Loki logs</symptom>
+      </symptoms>
+      <root_causes>
+        <cause>Container health check failures</cause>
+        <cause>Network connectivity issues</cause>
+        <cause>Resource constraints (memory, CPU)</cause>
+        <cause>Configuration errors in container setup</cause>
+      </root_causes>
+      <diagnostic_approach>
+        <step>Check container logs: docker logs CONTAINER_NAME</step>
+        <step>Verify health check configuration</step>
+        <step>Check resource usage: docker stats</step>
+        <step>Test network connectivity between containers</step>
+      </diagnostic_approach>
+      <dashboard_adaptations>
+        <adaptation>Include container health status in dashboards</adaptation>
+        <adaptation>Monitor health check failures</adaptation>
+        <adaptation>Track resource usage metrics if available</adaptation>
+        <adaptation>Alert on persistent unhealthy states</adaptation>
+      </dashboard_adaptations>
+    </issue>
+
+    <issue category="timestamp_errors">
+      <symptoms>
+        <symptom>Loki logs showing "timestamp too old" errors</symptom>
+        <symptom>Promtail "final error sending batch" messages</symptom>
+      </symptoms>
+      <root_causes>
+        <cause>Containers with old log files being processed</cause>
+        <cause>Loki rejecting logs older than retention period</cause>
+        <cause>Clock synchronization issues</cause>
+      </root_causes>
+      <solutions>
+        <solution>Configure Loki to accept older logs: LOKI_REJECT_OLD_SAMPLES=false</solution>
+        <solution>Set reasonable max age: LOKI_REJECT_OLD_SAMPLES_MAX_AGE=168h</solution>
+        <solution>Clean up old log files from problematic containers</solution>
+        <solution>Ensure system clocks are synchronized</solution>
+      </solutions>
+    </issue>
+  </common_issues>
+
+  <debugging_techniques>
+    <technique name="query_testing">
+      <description>Test queries before adding to dashboards</description>
+      <steps>
+        <step>Use Grafana Explore to test queries interactively</step>
+        <step>Start with simple {container_name="name"} queries</step>
+        <step>Add filters incrementally: |~ "error", rate(), sum(), etc.</step>
+        <step>Verify results make sense before adding to dashboard</step>
+      </steps>
+    </technique>
+
+    <technique name="loki_api_testing">
+      <description>Use Loki API directly to diagnose issues</description>
+      <useful_endpoints>
+        <endpoint>/loki/api/v1/labels - List all available labels</endpoint>
+        <endpoint>/loki/api/v1/label/LABEL_NAME/values - Get values for specific label</endpoint>
+        <endpoint>/loki/api/v1/query?query=QUERY - Test instant queries</endpoint>
+        <endpoint>/ready - Check Loki health</endpoint>
+      </useful_endpoints>
+    </technique>
+
+    <technique name="incremental_development">
+      <description>Build dashboards incrementally to isolate issues</description>
+      <approach>
+        <step>Start with single panel showing basic logs</step>
+        <step>Add status panel with simple vector(1) query</step>
+        <step>Add activity panel with basic rate() query</step>
+        <step>Add error panel with fallback</step>
+        <step>Add variables only after basic panels work</step>
+      </approach>
+    </technique>
+
+    <technique name="label_verification">
+      <description>Ensure container labels support dashboard requirements</description>
+      <verification_process>
+        <step>Check what labels containers actually have</step>
+        <step>Verify Promtail is mapping labels correctly</step>
+        <step>Test that label values appear in Loki</step>
+        <step>Align dashboard queries with actual label values</step>
+      </verification_process>
+    </technique>
+  </debugging_techniques>
+
+  <emergency_fixes>
+    <fix name="complete_dashboard_reset">
+      <when_to_use>When dashboards are completely broken and nothing works</when_to_use>
+      <steps>
+        <step>Stop Grafana: docker compose stop grafana</step>
+        <step>Remove volume: docker volume rm PROJECT_grafana-data</step>
+        <step>Start Grafana: docker compose start grafana</step>
+        <step>Wait for provisioning to complete</step>
+      </steps>
+      <note>This is the nuclear option - use only when other approaches fail</note>
+    </fix>
+
+    <fix name="query_simplification">
+      <when_to_use>When complex queries are causing "No data" issues</when_to_use>
+      <approach>
+        <step>Replace complex aggregations with simple rate() queries</step>
+        <step>Remove variable dependencies temporarily</step>
+        <step>Use direct container name targeting</step>
+        <step>Add fallback values to all metric queries</step>
+      </approach>
+    </fix>
+
+    <fix name="label_realignment">
+      <when_to_use>When container labels don't match dashboard expectations</when_to_use>
+      <process>
+        <step>Identify label mismatches via Loki API</step>
+        <step>Update container docker-compose.yml labels</step>
+        <step>Restart containers to pick up new labels</step>
+        <step>Update dashboard queries to match new labels</step>
+        <step>Test queries in Grafana Explore</step>
+      </process>
+    </fix>
+  </emergency_fixes>
+</troubleshooting_guide>

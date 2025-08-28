@@ -1,0 +1,535 @@
+<dashboard_templates>
+  <overview>
+    Reusable templates and patterns for creating different types of Grafana dashboards,
+    based on container types and monitoring requirements.
+  </overview>
+
+  <base_dashboard_template>
+    <description>Standard foundation for all dashboards</description>
+    <template><![CDATA[
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    // Panels go here
+  ],
+  "refresh": "15s",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": ["REPLACE_WITH_APPROPRIATE_TAGS"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "REPLACE_WITH_DASHBOARD_TITLE",
+  "uid": "REPLACE_WITH_UNIQUE_UID",
+  "version": 1,
+  "weekStart": ""
+}
+    ]]></template>
+  </base_dashboard_template>
+
+  <panel_templates>
+    <template name="status_panel">
+      <description>Shows UP/DOWN status for a container</description>
+      <use_case>First panel on every dashboard for quick health check</use_case>
+      <template><![CDATA[
+{
+  "datasource": { "type": "loki", "uid": "Loki" },
+  "gridPos": { "h": 6, "w": 4, "x": 0, "y": 0 },
+  "id": 1,
+  "title": "CONTAINER_NAME Status",
+  "type": "stat",
+  "fieldConfig": {
+    "defaults": {
+      "color": { "mode": "thresholds" },
+      "mappings": [
+        {
+          "options": {
+            "0": { "color": "red", "index": 1, "text": "DOWN" },
+            "1": { "color": "green", "index": 0, "text": "UP" }
+          },
+          "type": "value"
+        }
+      ],
+      "thresholds": {
+        "steps": [
+          { "color": "green", "value": null },
+          { "color": "red", "value": 0 }
+        ]
+      }
+    }
+  },
+  "options": {
+    "colorMode": "background",
+    "justifyMode": "center",
+    "reduceOptions": { "calcs": ["lastNotNull"] }
+  },
+  "targets": [
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "expr": "vector(1)",
+      "refId": "A"
+    }
+  ]
+}
+      ]]></template>
+    </template>
+
+    <template name="log_activity_panel">
+      <description>Shows log volume over time</description>
+      <use_case>Understanding container activity levels</use_case>
+      <template><![CDATA[
+{
+  "datasource": { "type": "loki", "uid": "Loki" },
+  "gridPos": { "h": 6, "w": 8, "x": 4, "y": 0 },
+  "id": 2,
+  "title": "Log Activity",
+  "type": "timeseries",
+  "fieldConfig": {
+    "defaults": {
+      "color": { "mode": "palette-classic" },
+      "custom": {
+        "drawStyle": "line",
+        "fillOpacity": 10,
+        "lineWidth": 1
+      }
+    }
+  },
+  "targets": [
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "expr": "sum(rate({container_name=\"CONTAINER_NAME\"} [1m]))",
+      "refId": "A",
+      "legendFormat": "Log Rate"
+    }
+  ]
+}
+      ]]></template>
+    </template>
+
+    <template name="error_rate_panel">
+      <description>Shows error count with proper fallback</description>
+      <use_case>Monitoring error rates with zero-value display</use_case>
+      <template><![CDATA[
+{
+  "datasource": { "type": "loki", "uid": "Loki" },
+  "gridPos": { "h": 6, "w": 4, "x": 12, "y": 0 },
+  "id": 3,
+  "title": "Errors (5m)",
+  "type": "stat",
+  "fieldConfig": {
+    "defaults": {
+      "color": { "mode": "thresholds" },
+      "thresholds": {
+        "steps": [
+          { "color": "green", "value": null },
+          { "color": "yellow", "value": 1 },
+          { "color": "red", "value": 5 }
+        ]
+      }
+    }
+  },
+  "options": {
+    "colorMode": "background",
+    "justifyMode": "center",
+    "reduceOptions": { "calcs": ["lastNotNull"] }
+  },
+  "targets": [
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "expr": "sum(rate({container_name=\"CONTAINER_NAME\"} |~ \"(?i)(error|exception)\" [5m])) or vector(0)",
+      "refId": "A"
+    }
+  ]
+}
+      ]]></template>
+    </template>
+
+    <template name="main_logs_panel">
+      <description>Primary log stream for the container</description>
+      <use_case>Main log investigation panel</use_case>
+      <template><![CDATA[
+{
+  "datasource": { "type": "loki", "uid": "Loki" },
+  "gridPos": { "h": 12, "w": 24, "x": 0, "y": 6 },
+  "id": 4,
+  "title": "CONTAINER_NAME Logs",
+  "type": "logs",
+  "options": {
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true,
+    "showLabels": false
+  },
+  "targets": [
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "expr": "{container_name=\"CONTAINER_NAME\"}",
+      "refId": "A"
+    }
+  ]
+}
+      ]]></template>
+    </template>
+
+    <template name="filtered_logs_panel">
+      <description>Log panel with specific filtering</description>
+      <use_case>Focused log investigation (errors, API calls, etc.)</use_case>
+      <template><![CDATA[
+{
+  "datasource": { "type": "loki", "uid": "Loki" },
+  "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+  "id": 5,
+  "title": "FILTER_DESCRIPTION Logs",
+  "type": "logs",
+  "options": {
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true,
+    "showLabels": false
+  },
+  "targets": [
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "expr": "{container_name=\"CONTAINER_NAME\"} |~ \"FILTER_REGEX\"",
+      "refId": "A"
+    }
+  ]
+}
+      ]]></template>
+    </template>
+
+    <template name="top_containers_panel">
+      <description>Bar chart showing most active containers</description>
+      <use_case>Identifying noisy or problematic containers</use_case>
+      <template><![CDATA[
+{
+  "datasource": { "type": "loki", "uid": "Loki" },
+  "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+  "id": 6,
+  "title": "Top 10 Most Active Containers",
+  "type": "bargauge",
+  "fieldConfig": {
+    "defaults": { "color": { "mode": "palette-classic" } }
+  },
+  "options": {
+    "orientation": "horizontal",
+    "displayMode": "gradient"
+  },
+  "targets": [
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "expr": "topk(10, sum by (container_name) (rate({FILTER_LABELS} [5m])))",
+      "refId": "A",
+      "legendFormat": "{{container_name}}"
+    }
+  ]
+}
+      ]]></template>
+    </template>
+  </panel_templates>
+
+  <variable_templates>
+    <template name="basic_variables">
+      <description>Standard variable set for most dashboards</description>
+      <template><![CDATA[
+"templating": {
+  "list": [
+    {
+      "name": "environment",
+      "type": "query",
+      "datasource": "Loki",
+      "query": "label_values({monitoring_enabled=\"true\"}, environment)",
+      "includeAll": true,
+      "multi": true,
+      "refresh": 2
+    },
+    {
+      "name": "container_name",
+      "type": "query",
+      "datasource": "Loki",
+      "query": "label_values({environment=~\"$environment\", service_name=~\"SERVICE_FILTER\"}, container_name)",
+      "includeAll": true,
+      "multi": true,
+      "refresh": 2
+    }
+  ]
+}
+      ]]></template>
+    </template>
+
+    <template name="auto_discovery_variables">
+      <description>Full variable hierarchy for auto-discovery dashboards</description>
+      <template><![CDATA[
+"templating": {
+  "list": [
+    {
+      "name": "environment",
+      "type": "query",
+      "datasource": "Loki",
+      "query": "label_values({}, environment)",
+      "includeAll": true,
+      "multi": true,
+      "refresh": 2
+    },
+    {
+      "name": "compose_project",
+      "type": "query",
+      "datasource": "Loki",
+      "query": "label_values({environment=~\"$environment\"}, compose_project)",
+      "includeAll": true,
+      "multi": true,
+      "refresh": 2
+    },
+    {
+      "name": "service_type",
+      "type": "query",
+      "datasource": "Loki",
+      "query": "label_values({environment=~\"$environment\", compose_project=~\"$compose_project\"}, service_type)",
+      "includeAll": true,
+      "multi": true,
+      "refresh": 2
+    },
+    {
+      "name": "container_name",
+      "type": "query",
+      "datasource": "Loki",
+      "query": "label_values({environment=~\"$environment\", service_type=~\"$service_type\"}, container_name)",
+      "includeAll": true,
+      "multi": true,
+      "refresh": 2
+    }
+  ]
+}
+      ]]></template>
+    </template>
+  </variable_templates>
+
+  <dashboard_types>
+    <type name="service_specific">
+      <when_to_use>When creating dashboards for known services (MySQL, Neo4j, etc.)</when_to_use>
+      <characteristics>
+        <characteristic>Direct container name targeting</characteristic>
+        <characteristic>Service-specific filtering and metrics</characteristic>
+        <characteristic>Minimal templating for reliability</characteristic>
+        <characteristic>Focused on operational insights for that service</characteristic>
+      </characteristics>
+      <example_services>mysql, neo4j, memgraph, qdrant, nginx, postgres</example_services>
+    </type>
+
+    <type name="auto_discovery">
+      <when_to_use>When creating universal dashboards that work with any container</when_to_use>
+      <characteristics>
+        <characteristic>Dynamic variable hierarchies</characteristic>
+        <characteristic>Generic filtering patterns</characteristic>
+        <characteristic>Automatic adaptation to new containers</characteristic>
+        <characteristic>Broad operational overview</characteristic>
+      </characteristics>
+      <use_cases>Public repositories, multi-tenant environments, unknown container types</use_cases>
+    </type>
+
+    <type name="system_overview">
+      <when_to_use>When creating high-level monitoring across multiple services</when_to_use>
+      <characteristics>
+        <characteristic>Cross-service aggregations</characteristic>
+        <characteristic>Environment-based filtering</characteristic>
+        <characteristic>System-wide health indicators</characteristic>
+        <characteristic>Error correlation across services</characteristic>
+      </characteristics>
+      <focus>Strategic monitoring rather than tactical investigation</focus>
+    </type>
+  </dashboard_types>
+
+  <naming_conventions>
+    <convention category="dashboard_titles">
+      <rule>Use clear, descriptive names without fluff</rule>
+      <good_examples>
+        <example>"MySQL Database"</example>
+        <example>"Neo4j Graph Database"</example>
+        <example>"System Overview"</example>
+        <example>"Auto-Discovery Dashboard"</example>
+      </good_examples>
+      <bad_examples>
+        <example>"MySQL Database - Improved"</example>
+        <example>"Perfect Neo4j Monitoring"</example>
+        <example>"Advanced System Dashboard"</example>
+      </bad_examples>
+    </convention>
+
+    <convention category="panel_titles">
+      <rule>Be specific and actionable</rule>
+      <good_examples>
+        <example>"Error Rate (5m)"</example>
+        <example>"Log Activity"</example>
+        <example>"Top 10 Most Active Containers"</example>
+      </good_examples>
+      <bad_examples>
+        <example>"Errors"</example>
+        <example>"Activity"</example>
+        <example>"Container Information"</example>
+      </bad_examples>
+    </convention>
+
+    <convention category="uids">
+      <rule>Use descriptive, kebab-case identifiers</rule>
+      <pattern>service-name or service-name-type</pattern>
+      <examples>
+        <example>"mysql-db"</example>
+        <example>"neo4j-db"</example>
+        <example>"system-overview"</example>
+        <example>"auto-discovery"</example>
+      </examples>
+    </convention>
+
+    <convention category="tags">
+      <rule>Use technology and purpose tags only</rule>
+      <categories>
+        <technology>mysql, neo4j, memgraph, qdrant, nginx, postgres</technology>
+        <purpose>database, logs, monitoring, overview, discovery</purpose>
+        <type>graph, relational, vector, web, api</type>
+      </categories>
+      <avoid>improved, perfect, advanced, enhanced, optimized</avoid>
+    </convention>
+  </naming_conventions>
+
+  <container_detection_patterns>
+    <pattern name="database_detection">
+      <labels_to_check>
+        <label>service_type=database</label>
+        <label>database_type=mysql|postgres|neo4j|memgraph|qdrant</label>
+        <label>container_group=databases</label>
+      </labels_to_check>
+      <container_name_patterns>
+        <pattern>*-db</pattern>
+        <pattern>mysql*</pattern>
+        <pattern>postgres*</pattern>
+        <pattern>neo4j*</pattern>
+        <pattern>memgraph*</pattern>
+        <pattern>qdrant*</pattern>
+      </container_name_patterns>
+      <recommended_panels>
+        <panel>Status indicator</panel>
+        <panel>Connection/Query activity</panel>
+        <panel>Error rate monitoring</panel>
+        <panel>Transaction logs (if applicable)</panel>
+        <panel>Main log stream</panel>
+        <panel>Error-only log stream</panel>
+      </recommended_panels>
+    </pattern>
+
+    <pattern name="web_service_detection">
+      <labels_to_check>
+        <label>service_type=web|api|ui</label>
+        <label>ui_type=web</label>
+      </labels_to_check>
+      <container_name_patterns>
+        <pattern>*-web</pattern>
+        <pattern>*-api</pattern>
+        <pattern>*-ui</pattern>
+        <pattern>nginx*</pattern>
+        <pattern>apache*</pattern>
+        <pattern>*-frontend</pattern>
+        <pattern>*-backend</pattern>
+      </container_name_patterns>
+      <recommended_panels>
+        <panel>Status indicator</panel>
+        <panel>HTTP request activity</panel>
+        <panel>Response code distribution</panel>
+        <panel>Error rate monitoring</panel>
+        <panel>Main log stream</panel>
+        <panel>HTTP access logs</panel>
+        <panel>Error logs</panel>
+      </recommended_panels>
+    </pattern>
+
+    <pattern name="monitoring_service_detection">
+      <labels_to_check>
+        <label>service_type=monitoring</label>
+        <label>container_group=monitoring</label>
+        <label>monitoring_role=*</label>
+      </labels_to_check>
+      <container_name_patterns>
+        <pattern>grafana*</pattern>
+        <pattern>prometheus*</pattern>
+        <pattern>loki*</pattern>
+        <pattern>promtail*</pattern>
+        <pattern>*-monitoring</pattern>
+      </container_name_patterns>
+      <recommended_panels>
+        <panel>Status indicator</panel>
+        <panel>Data ingestion rates</panel>
+        <panel>Storage metrics</panel>
+        <panel>System health</panel>
+        <panel>Main log stream</panel>
+        <panel>Error logs</panel>
+      </recommended_panels>
+    </pattern>
+
+    <pattern name="generic_container_detection">
+      <when_to_use>When container doesn't match known patterns</when_to_use>
+      <approach>Create basic monitoring with safe, generic panels</approach>
+      <recommended_panels>
+        <panel>Status indicator</panel>
+        <panel>Log activity</panel>
+        <panel>Error rate (generic error filter)</panel>
+        <panel>Main log stream</panel>
+        <panel>Error logs</panel>
+      </recommended_panels>
+      <safe_filters>
+        <filter>|~ "(?i)(error|exception|fatal)"</filter>
+        <filter>|~ "(?i)(warn|warning)"</filter>
+        <filter>|~ "(?i)(http|api|request)" (if web-related)</filter>
+      </safe_filters>
+    </pattern>
+  </container_detection_patterns>
+
+  <layout_guidelines>
+    <guideline name="panel_sizing">
+      <rule>Use consistent grid sizing for professional appearance</rule>
+      <standard_sizes>
+        <size>Status panels: 4 width x 6 height</size>
+        <size>Activity charts: 8 width x 6 height</size>
+        <size>Main logs: 24 width x 12 height</size>
+        <size>Filtered logs: 12 width x 8 height</size>
+        <size>Bar charts: 12 width x 8 height</size>
+      </standard_sizes>
+    </guideline>
+
+    <guideline name="row_organization">
+      <rule>Use row headers to group related panels</rule>
+      <standard_rows>
+        <row>"Container Health" - Status and basic metrics</row>
+        <row>"Activity Analysis" - Trends and activity patterns</row>
+        <row>"Log Investigation" - Log streams and filtered views</row>
+      </standard_rows>
+    </guideline>
+
+    <guideline name="color_usage">
+      <rule>Use Grafana's default color schemes for consistency</rule>
+      <status_colors>
+        <color>Green: UP, healthy, normal</color>
+        <color>Yellow: Warning, elevated</color>
+        <color>Red: DOWN, error, critical</color>
+        <color>Blue: Informational metrics</color>
+      </status_colors>
+    </guideline>
+  </layout_guidelines>
+</dashboard_templates>

@@ -1,0 +1,185 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "title": "Auto-Discovered Containers",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "title": "Total Active Containers",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }] },
+          "unit": "short"
+        }
+      },
+      "options": { "colorMode": "background", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "count(count by (container_name) (rate({container_name=~\".+\"} [5m])))", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "title": "Containers by Project",
+      "type": "piechart",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "right" }, "pieType": "pie" },
+      "targets": [{ "expr": "count by (compose_project) (count by (container_name, compose_project) (rate({container_name=~\".+\"} [5m])))", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "id": 3,
+      "title": "Containers by Service Type",
+      "type": "piechart",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "right" }, "pieType": "pie" },
+      "targets": [{ "expr": "count by (service_type) (count by (container_name, service_type) (rate({container_name=~\".+\"} [5m])))", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "id": 4,
+      "title": "System Error Rate",
+      "type": "stat",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 10 }] }
+        }
+      },
+      "options": { "colorMode": "background", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "expr": "sum(rate({container_name=~\".+\"} |~ \"(?i)(error|exception)\" [5m])) or vector(0)", "refId": "A" }]
+    },
+    {
+      "title": "Container Activity Matrix",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "collapsed": false
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 5,
+      "title": "Top 10 Most Active Containers",
+      "type": "bargauge",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" },
+      "targets": [{ "expr": "topk(10, sum by (container_name) (rate({container_name=~\".+\"} [5m])))", "refId": "A", "legendFormat": "{{container_name}}" }]
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 6,
+      "title": "Error Distribution by Container",
+      "type": "bargauge",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" },
+      "targets": [{ "expr": "topk(10, sum by (container_name) (rate({container_name=~\".+\"} |~ \"(?i)(error|exception)\" [5m])))", "refId": "A", "legendFormat": "{{container_name}}" }]
+    },
+    {
+      "title": "Dynamic Container Logs",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "collapsed": false
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "id": 7,
+      "title": "Recent Errors (All Containers)",
+      "type": "logs",
+      "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true, "showLabels": true },
+      "targets": [{ "expr": "{container_name=~\"$container_name\"} |~ \"(?i)(error|exception|fatal)\"", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "id": 8,
+      "title": "Selected Container Logs",
+      "type": "logs",
+      "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true, "showLabels": true },
+      "targets": [{ "expr": "{container_name=~\"$container_name\"}", "refId": "A" }]
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": ["auto-discovery", "containers", "dynamic"],
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "type": "query",
+        "datasource": "Loki",
+        "query": "label_values({}, environment)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "current": { "text": "All", "value": "$__all", "selected": true }
+      },
+      {
+        "name": "compose_project",
+        "type": "query",
+        "datasource": "Loki",
+        "query": "label_values({environment=~\"$environment\"}, compose_project)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "current": { "text": "All", "value": "$__all", "selected": true }
+      },
+      {
+        "name": "service_type",
+        "type": "query",
+        "datasource": "Loki",
+        "query": "label_values({environment=~\"$environment\", compose_project=~\"$compose_project\"}, service_type)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "current": { "text": "All", "value": "$__all", "selected": true }
+      },
+      {
+        "name": "container_name",
+        "type": "query",
+        "datasource": "Loki",
+        "query": "label_values({environment=~\"$environment\", compose_project=~\"$compose_project\", service_type=~\"$service_type\"}, container_name)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "current": { "text": "All", "value": "$__all", "selected": true }
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Auto-Discovery Dashboard",
+  "uid": "auto-discovery",
+  "version": 1,
+  "weekStart": ""
+}
