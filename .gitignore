@@ -30,3 +30,11 @@ Thumbs.db
 #Test Projects
 grafana-loki/dashboards/purchasing-neo4j-dashboard.json
 
+#Other
+qwen3/
+qwen3-llm/
+
+# Cache and model directories
+
+cache/
+models/
