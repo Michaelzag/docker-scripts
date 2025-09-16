@@ -5,6 +5,7 @@
 
 ```bash
 # Clone and setup
+git clone git@github.com:Michaelzag/docker-scripts.git
 cd qwen3-embedding
 docker compose up -d
 ```
