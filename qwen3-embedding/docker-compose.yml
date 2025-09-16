@@ -11,20 +11,14 @@ services:
       - ./models:/models
       - ./cache:/root/.cache
     environment:
-      - MODEL_NAME=${QWEN3_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-4B}
-      - HOST=0.0.0.0
-      - PORT=8000
-      - GPU_MEMORY_UTILIZATION=${QWEN3_EMBEDDING_GPU_MEM:-0.95}
-      - MAX_MODEL_LEN=${QWEN3_EMBEDDING_MAX_LEN:-8192}
-      - EMBEDDING_DIMENSIONS=${QWEN3_EMBEDDING_DIMENSIONS:-2560}
-      - QUANTIZATION=${QWEN3_QUANTIZATION:-fp8}
-      - FP8_FORMAT=${QWEN3_FP8_FORMAT:-e4m3}
-      - ENABLE_PREFIX_CACHING=${QWEN3_ENABLE_PREFIX_CACHING:-true}
-      - TENSOR_PARALLEL_SIZE=1
-      - PIPELINE_PARALLEL_SIZE=1
-      - VLLM_ATTENTION_BACKEND=FLASHINFER
-      - CUDA_VISIBLE_DEVICES=0
-    mem_limit: ${QWEN3_EMBEDDING_MEMORY_LIMIT:-4g}
+       - MODEL_NAME=${QWEN3_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-4B-GGUF}
+       - HOST=0.0.0.0
+       - PORT=8000
+       - GPU_MEMORY_UTILIZATION=${QWEN3_EMBEDDING_GPU_MEM:-0.95}
+       - MAX_MODEL_LEN=${QWEN3_EMBEDDING_MAX_LEN:-8192}
+       - ENABLE_PREFIX_CACHING=${QWEN3_ENABLE_PREFIX_CACHING:-true}
+       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    mem_limit: ${QWEN3_EMBEDDING_MEMORY_LIMIT:-8g}
     deploy:
       resources:
         reservations:
@@ -33,19 +27,20 @@ services:
               count: 1
               capabilities: [gpu]
     command: >
-      --model ${QWEN3_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-4B}
+      --model ${QWEN3_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-4B-GGUF}
       --host 0.0.0.0
       --port 8000
       --gpu-memory-utilization ${QWEN3_EMBEDDING_GPU_MEM:-0.95}
       --max-model-len ${QWEN3_EMBEDDING_MAX_LEN:-8192}
       --tensor-parallel-size 1
-      --quantization ${QWEN3_QUANTIZATION:-fp8}
-      --kv-cache-dtype fp8_e4m3
       --enable-prefix-caching
       --max-parallel-loading-workers 4
-      --max-num-batched-tokens 65536
-      --max-num-seqs 512
-      --enforce-eager
+      --task embed
+      --quantization fp8
+      --max-num-batched-tokens ${QWEN3_MAX_NUM_BATCHED_TOKENS:-32768}
+      --max-num-seqs ${QWEN3_MAX_NUM_SEQS:-256}
+      --max-model-len 8192
+      --compilation-config '{"cudagraph_capture_sizes": [512, 256, 128, 64, 32, 16, 8, 4, 2, 1]}'
       --disable-log-stats
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
