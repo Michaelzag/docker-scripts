@@ -1,0 +1,43 @@
+name: qwen3-embedding-docker
+
+services:
+  qwen3-embedding:
+    provider:
+      type: model
+      options:
+        model: ${DOCKER_MODEL:-Qwen/Qwen3-Embedding-4B-GGUF}
+    ports:
+      - "${DOCKER_EMBEDDING_PORT:-7801}:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - "environment=${ENVIRONMENT:-dev}"
+      - "service_type=ai-service"
+      - "name=qwen3-embedding-docker"
+      - "ai_model_type=embedding"
+      - "ai_framework=docker-model-runner"
+      - "container_group=ai-services"
+      - "monitoring_enabled=true"
+
+  # Optional: Your application that uses the embeddings
+  embedding-indexer:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile
+    working_dir: /app
+    volumes:
+      - ./data:/app/data
+    environment:
+      - OPENAI_BASE_URL=http://qwen3-embedding:80/engines/llama.cpp/v1
+      - OPENAI_API_KEY=dummy
+      - MODEL_NAME=${DOCKER_MODEL:-Qwen/Qwen3-Embedding-4B-GGUF}
+    command: ["uv", "run", "test_concurrency.py"]
+    depends_on:
+      qwen3-embedding:
+        condition: service_healthy
+    profiles:
+      - test
