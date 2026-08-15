@@ -1,0 +1,6 @@
+services:
+  muse-glimmer-30b:
+    # llama.cpp b10438 / 9d57ce4; includes merged DFlash GPU sampling PR #26958.
+    # Runtime-only experiment: every model, context, sampling, and DFlash
+    # argument remains inherited from the production compose file.
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:b5e13ddfaa3df76d239ee038075960a46f595201808728fd70bbf2c8b38f6530
