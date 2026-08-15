@@ -1,0 +1,49 @@
+services:
+  muse-glimmer-30b:
+    # Runtime plus one controlled DFlash depth variable. Compose replaces the
+    # base command as a whole, so every production argument is repeated here.
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:b5e13ddfaa3df76d239ee038075960a46f595201808728fd70bbf2c8b38f6530
+    command:
+      - -m
+      - "/models/${MUSE_MODEL_FILE:-Muse-Glimmer-30B-KQuant-Dynamic-Q4_K_XL.gguf}"
+      - --mmproj
+      - /models/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf
+      - -md
+      - /models/dflash-Muse-Glimmer-30B-Q4_K_M.gguf
+      - --spec-type
+      - draft-dflash
+      - --spec-draft-n-max
+      - "${MUSE_SPEC_N_MAX:-15}"
+      - --spec-draft-n-min
+      - "0"
+      - --spec-draft-p-min
+      - "0.0"
+      - -ngl
+      - "99"
+      - -ngld
+      - "99"
+      - -c
+      - "262144"
+      - -np
+      - "2"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --alias
+      - mbai/meta/muse-glimmer-30b
+      - --jinja
+      - --flash-attn
+      - "on"
+      - --temp
+      - "1"
+      - --top-p
+      - "0.95"
+      - --top-k
+      - "64"
+      - --reasoning-budget
+      - "256"
+      - --chat-template-kwargs
+      - '{"reasoning_strength":"low"}'
+      - --metrics
+      - --no-webui

@@ -1,0 +1,30 @@
+services:
+  gemma4-26b-a4b:
+    # Same production model/context/parallelism with MTP removed. Explicit
+    # default batch values isolate speculation as the only variable.
+    command:
+      - -m
+      - /models/gemma-4-26B-A4B-it-Q4_0.gguf
+      - --mmproj
+      - /models/mmproj-gemma-4-26B-A4B-it-Q8_0.gguf
+      - -ngl
+      - "99"
+      - -c
+      - "262144"
+      - -np
+      - "2"
+      - -b
+      - "2048"
+      - -ub
+      - "512"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --alias
+      - armada/google/gemma-4-26b-a4b-it
+      - --jinja
+      - --flash-attn
+      - "on"
+      - --metrics
+      - --no-webui

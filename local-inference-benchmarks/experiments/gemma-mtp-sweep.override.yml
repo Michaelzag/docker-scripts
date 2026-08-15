@@ -1,0 +1,46 @@
+services:
+  gemma4-26b-a4b:
+    # Controlled Gemma MTP/batching sweep. Compose replaces the base command,
+    # so all production arguments are repeated and only env-backed values vary.
+    command:
+      - -m
+      - /models/gemma-4-26B-A4B-it-Q4_0.gguf
+      - --mmproj
+      - /models/mmproj-gemma-4-26B-A4B-it-Q8_0.gguf
+      - -md
+      - /models/mtp-gemma-4-26B-A4B-it-Q4_0.gguf
+      - --spec-type
+      - draft-mtp
+      - --spec-draft-n-max
+      - "${GEMMA_SPEC_N_MAX:-1}"
+      - -ngl
+      - "99"
+      - -ngld
+      - "99"
+      - -c
+      - "262144"
+      - -np
+      - "2"
+      - -b
+      - "${GEMMA_BATCH:-2048}"
+      - -ub
+      - "${GEMMA_UBATCH:-512}"
+      - -ctk
+      - "${GEMMA_CACHE_K:-f16}"
+      - -ctv
+      - "${GEMMA_CACHE_V:-f16}"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --alias
+      - armada/google/gemma-4-26b-a4b-it
+      - --jinja
+      - --flash-attn
+      - "on"
+      - --reasoning
+      - "${GEMMA_REASONING_MODE:-auto}"
+      - --reasoning-budget
+      - "${GEMMA_REASONING_BUDGET:--1}"
+      - --metrics
+      - --no-webui

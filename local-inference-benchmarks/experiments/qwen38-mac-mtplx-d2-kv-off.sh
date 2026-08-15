@@ -1,0 +1,48 @@
+#!/bin/zsh
+set -euo pipefail
+
+exec /Users/michael/projects/macmini/qwen38-mtplx-server/.venv/bin/python \
+  -m mtplx.server.openai \
+  --model /Users/michael/projects/macmini/models/qwen38-mtplx/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed \
+  --backend-id qwen3_next \
+  --host 0.0.0.0 \
+  --port 2345 \
+  --depth 2 \
+  --generation-mode mtp \
+  --profile turbo \
+  --reasoning-mode on \
+  --preserve-thinking on \
+  --verify-strategy capture_commit \
+  --verify-core linear-gdn-from-conv-tape \
+  --draft-lm-head-bits 4 \
+  --draft-lm-head-group-size 64 \
+  --draft-lm-head-mode affine \
+  --rate-limit 0 \
+  --stream-interval 1 \
+  --scheduler-mode serial \
+  --batching-preset solo \
+  --mtp-batch-numerics throughput \
+  --warmup-tokens 32 \
+  --model-id mac/qwen/qwen3.8-27b \
+  --paged-kv-quantization off \
+  --fan-mode default \
+  --retrieval-max-resident 2 \
+  --context-window 262144 \
+  --ssd-session-cache on \
+  --ssd-session-cache-dir /Users/michael/projects/macmini/qwen38-mtplx-server/var/sessions \
+  --ssd-session-cache-max-size 20GB \
+  --ssd-session-cache-min-prefix-tokens 512 \
+  --draft-temperature 1.0 \
+  --draft-top-p 0.95 \
+  --draft-top-k 20 \
+  --tool-prompt-mode native \
+  --chat-template-profile tokenizer \
+  --api-key none \
+  --max-response-tokens 32768 \
+  --temperature 1.0 \
+  --top-p 0.95 \
+  --top-k 20 \
+  --enable-thinking \
+  --reasoning-parser qwen3 \
+  --reasoning-effort medium \
+  --no-stats-footer
