@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import tempfile
 import threading
@@ -12,7 +14,9 @@ from generative_benchmark import (
     CANDIDATE_STATUS,
     candidate_rows,
     candidate_variables,
+    context_settings,
     digest,
+    main,
     render_candidate,
     run_row,
     summarize,
@@ -23,6 +27,17 @@ class Handler(BaseHTTPRequestHandler):
     response: ClassVar[dict] = {}
     status = 200
     requests: ClassVar[list] = []
+    props: ClassVar[dict] = {}
+    props_status = 200
+    get_paths: ClassVar[list] = []
+
+    def do_GET(self):
+        self.get_paths.append(self.path)
+        data = json.dumps(self.props).encode()
+        self.send_response(self.props_status)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -72,12 +87,15 @@ class GenerativeTests(unittest.TestCase):
     def setUp(self):
         Handler.status = 200
         Handler.requests = []
+        Handler.props = {'default_generation_settings': {'n_ctx': 262144}}
+        Handler.props_status = 200
+        Handler.get_paths = []
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.client = ChatClient(f'http://127.0.0.1:{self.server.server_port}/v1', 'test-key', 5, artifacts_dir=Path(self.tmp.name))
 
-    def run_case(self, row):
-        result = run_row(row, self.client, 'test-model', {}, 100)
+    def run_case(self, row, context_tokens=131072):
+        result = run_row(row, self.client, 'test-model', {}, 100, context_tokens)
         self.assertEqual(len(Handler.requests), 1)
         self.assertEqual(Handler.requests[0]['temperature'], 0)
         self.assertEqual(Handler.requests[0]['seed'], 0)
@@ -162,7 +180,7 @@ class GenerativeTests(unittest.TestCase):
     def test_missing_variables_fail_without_http(self):
         row = summary()
         row.update(prompt_variant=CANDIDATE_STATUS, missing_variables=['level'])
-        result = run_row(row, self.client, 'test-model', {}, 100)
+        result = run_row(row, self.client, 'test-model', {}, 100, 131072)
         self.assertEqual(Handler.requests, [])
         self.assertEqual(result['reason'], 'missing_variable')
         self.assertEqual(result['missing_variables'], ['level'])
@@ -173,10 +191,112 @@ class GenerativeTests(unittest.TestCase):
         proposal = summary()
         proposal['prompt_variant'] = 'UNVERIFIED_PROPOSED_EVAL_ONLY'
         candidate = {**proposal, 'prompt_variant': CANDIDATE_STATUS}
-        results = [run_row(row, self.client, 'test-model', {}, 100) for row in (proposal, candidate)]
+        results = [run_row(row, self.client, 'test-model', {}, 100, 131072) for row in (proposal, candidate)]
         groups = summarize(results, 1)
         self.assertEqual(len(groups), 2)
         self.assertTrue(all(group['rows'] == 1 and group['passed'] == 1 for group in groups.values()))
+
+    def test_accepted_fitting_trial_is_excluded_with_content_diagnostics(self):
+        Handler.response = reply({'sections': [{'text': 'Incomplete', 'members': [1], 'assessments': [11]}], 'uncertainty': [], 'conflicts': []})
+        Handler.response['usage'] = {'prompt_tokens': 237064}
+        row = summary()
+        row.update(id='hs-13', prompt_variant=CANDIDATE_STATUS)
+        accepted = self.run_case(row, 262144)
+        self.assertEqual(accepted['outcome'], 'not_oversize_for_config')
+        self.assertTrue(accepted['excluded_from_scoring'])
+        self.assertIsNone(accepted['passed'])
+        self.assertFalse(accepted['diagnostics']['content_checks']['member_coverage'])
+        self.assertFalse(accepted['diagnostics']['content_passed'])
+        Handler.requests = []
+        Handler.response = reply({'sections': [{'text': 'Complete', 'members': [1, 2], 'assessments': [11, 22]}], 'uncertainty': [], 'conflicts': []})
+        row['id'] = 'hs-01'
+        scored = self.run_case(row, 262144)
+        group = next(iter(summarize([accepted, scored], 1).values()))
+        self.assertEqual((group['rows'], group['scored_rows'], group['passed'], group['failed']), (2, 1, 1, 0))
+        self.assertEqual(group['pass_rate'], 1)
+        self.assertEqual(group['not_oversize_for_config_count'], 1)
+        excluded_only = next(iter(summarize([accepted], 1).values()))
+        self.assertIsNone(excluded_only['pass_rate'])
+
+    def test_accepted_at_context_or_truncated_trial_fails(self):
+        row = summary()
+        row['id'] = 'hs-13'
+        for usage, truncation in (
+            ({'prompt_tokens': 131072}, {}),
+            ({'prompt_tokens': 237064}, {}),
+            ({'prompt_tokens': 100}, {'__verbose': {'truncated': True}}),
+            ({'prompt_tokens': 100}, {'truncated': True}),
+            ({}, {}),
+        ):
+            with self.subTest(usage=usage, truncation=truncation):
+                Handler.requests = []
+                Handler.response = {**reply({'sections': [{'text': 'Fact', 'members': [1, 2], 'assessments': []}], 'uncertainty': [], 'conflicts': []}),
+                                    'usage': usage, **truncation}
+                result = self.run_case(row)
+                self.assertFalse(result['passed'])
+                self.assertFalse(result['excluded_from_scoring'])
+                self.assertEqual(result['outcome'], 'invalid_oversize_acceptance')
+
+    def test_context_discovery_and_explicit_fallback(self):
+        settings = context_settings(self.client, 999)
+        self.assertEqual((settings['n_ctx'], settings['source']), (262144, 'props.default_generation_settings.n_ctx'))
+        Handler.props = {'n_ctx': 131072}
+        settings = context_settings(self.client, None)
+        self.assertEqual((settings['n_ctx'], settings['source']), (131072, 'props.n_ctx'))
+        Handler.props_status = 404
+        settings = context_settings(self.client, 65536)
+        self.assertEqual((settings['n_ctx'], settings['source']), (65536, '--context-tokens'))
+        with self.assertRaisesRegex(ValueError, 'supply --context-tokens'):
+            context_settings(self.client, None)
+
+    def test_cli_65536_budget_reaches_wire_and_props_checked_once(self):
+        root = Path(self.tmp.name)
+        output = root / 'report.json'
+        Handler.response = reply({'name': 'Gift Card', 'definition': 'A card with a balance.'})
+        argv = ['generative_benchmark.py', '--fixtures', str(root), '--templates', str(root / 'templates.json'),
+                '--base-url', self.client.base_url, '--model', 'test-model', '--max-tokens', '65536',
+                '--output', str(output), '--artifacts-dir', str(root / 'artifacts'),
+                '--api-key-env', 'GENERATIVE_TEST_API_KEY']
+        with patch('sys.argv', argv), patch.dict('os.environ', {'GENERATIVE_TEST_API_KEY': 'test-key'}), \
+                patch('generative_benchmark.load_rows', return_value=[naming(), {**naming(), 'id': 'on-02'}]), \
+                patch('generative_benchmark.candidate_rows', return_value=[]):
+            self.assertEqual(main(), 0)
+        self.assertEqual(Handler.get_paths, ['/props'])
+        self.assertEqual(len(Handler.requests), 2)
+        self.assertTrue(all(body['max_tokens'] == 65536 for body in Handler.requests))
+        report = json.loads(output.read_text())
+        self.assertEqual(report['context']['n_ctx'], 262144)
+        self.assertEqual(report['context']['source'], 'props.default_generation_settings.n_ctx')
+        self.assertTrue(all(row['passed'] for row in report['rows']))
+        Handler.props_status, Handler.get_paths, Handler.requests = 404, [], []
+        output = root / 'fallback.json'
+        argv[argv.index('--output') + 1] = str(output)
+        argv.extend(['--context-tokens', '131072'])
+        with patch('sys.argv', argv), patch.dict('os.environ', {'GENERATIVE_TEST_API_KEY': 'test-key'}), \
+                patch('generative_benchmark.load_rows', return_value=[naming()]), \
+                patch('generative_benchmark.candidate_rows', return_value=[]):
+            self.assertEqual(main(), 0)
+        report = json.loads(output.read_text())
+        self.assertEqual(Handler.get_paths, ['/props'])
+        self.assertEqual(Handler.requests[0]['max_tokens'], 65536)
+        self.assertEqual(report['context']['n_ctx'], 131072)
+        self.assertEqual(report['context']['source'], '--context-tokens')
+
+    def test_cli_missing_context_fails_before_generation(self):
+        root = Path(self.tmp.name)
+        Handler.props_status = 404
+        output = root / 'unclaimed.json'
+        argv = ['generative_benchmark.py', '--fixtures', str(root), '--templates', str(root / 'templates.json'),
+                '--base-url', self.client.base_url, '--model', 'test-model',
+                '--output', str(output), '--artifacts-dir', str(root / 'artifacts'),
+                '--api-key-env', 'GENERATIVE_TEST_API_KEY']
+        with patch('sys.argv', argv), patch.dict('os.environ', {'GENERATIVE_TEST_API_KEY': 'test-key'}), \
+                patch('generative_benchmark.load_rows', return_value=[naming()]), \
+                patch('generative_benchmark.candidate_rows', return_value=[]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(), 2)
+        self.assertEqual(Handler.requests, [])
+        self.assertFalse(output.exists())
 
 
 class CandidateRenderTests(unittest.TestCase):

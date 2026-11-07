@@ -770,14 +770,27 @@ fixtures without a model judge. It verifies each rendered message against the
 fixture hashes, makes one request per row with temperature and seed fixed at zero,
 and retains request/response evidence. The hub summary prompt is an **eval-only
 proposal**, not a production prompt. Invalid shapes and length finishes fail
-without repair or retry. The intentionally oversized hs-13 must receive a typed
-context-length refusal; it is never truncated to fit.
+without repair or retry. The hs-13 oversize trial is context-dependent:
+an accepted full-input request that fits the endpoint is not an oversize test.
 The refusal check accepts only HTTP 4xx with error type
 `context_length_exceeded` or llama.cpp's `exceed_context_size_error`, and no
 generated output. `diagnostics.zagdb_detector_compatible` is true only for
 `context_length_exceeded`; it does **not** gate row success. Each variant reports
 `zagdb_detector_compatible_count` and `zagdb_detector_checked_count` separately,
 so a correct server refusal is not penalized for ZagDB's detector limitation.
+
+Before generation the runner makes one GET to the endpoint origin's `/props`,
+using `default_generation_settings.n_ctx`, then top-level `n_ctx`, for per-slot
+context. If neither is available, `--context-tokens N` is required; otherwise the
+run fails before generation. The report's `context` records `n_ctx` and its source.
+For an accepted hs-13 response, integer `usage.prompt_tokens < n_ctx` with no
+input-truncation signal yields `outcome: not_oversize_for_config` and
+`excluded_from_scoring: true` (`passed: null`). Its ordinary content checks remain
+under `diagnostics`, not in pass/fail totals. Prompt counts at or above context,
+missing counts, or explicit input-truncation flags fail. Variant summaries expose
+`scored_rows` and `not_oversize_for_config_count`; `pass_rate` uses only scored rows.
+The output budget is not capped at 8192: `--max-tokens 65536` is supported end to
+end, independently of the context comparison.
 
 ```sh
 python3 generative_benchmark.py \

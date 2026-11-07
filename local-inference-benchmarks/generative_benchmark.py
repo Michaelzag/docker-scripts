@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -17,6 +18,8 @@ import re
 import statistics
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from pathlib import Path
 
@@ -219,7 +222,37 @@ def valid_shape(answer: object, family: str) -> bool:
     return True
 
 
-def run_row(row: dict, client: ChatClient, model: str, extra: dict, max_tokens: int) -> dict:
+def context_settings(client: ChatClient, configured: int | None) -> dict:
+    """Discover one per-slot context value before any generation, or require it."""
+    status = None
+    error = None
+    props = {}
+    headers = {"Authorization": f"Bearer {client.api_key}"} if client.api_key else {}
+    request = urllib.request.Request(f"{client.origin}/props", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=client.measurement_timeout) as response:
+            status = response.status
+            parsed = json.load(response)
+            if isinstance(parsed, dict):
+                props = parsed
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        error = f"HTTP {exc.code}"
+        exc.close()
+    except (OSError, ValueError, RecursionError, http.client.HTTPException) as exc:
+        error = f"{type(exc).__name__}: {exc}"
+    defaults = props.get("default_generation_settings")
+    nested = defaults.get("n_ctx") if isinstance(defaults, dict) else None
+    for value, source in ((nested, "props.default_generation_settings.n_ctx"),
+                          (props.get("n_ctx"), "props.n_ctx"),
+                          (configured, "--context-tokens")):
+        if type(value) is int and value > 0:
+            return {"n_ctx": value, "source": source, "props_status": status, "props_error": error}
+    raise ValueError("per-slot context unavailable from /props; supply --context-tokens")
+
+
+def run_row(row: dict, client: ChatClient, model: str, extra: dict, max_tokens: int,
+            context_tokens: int) -> dict:
     if row.get("missing_variables"):
         return {"id": row["id"], "family": row["family"], "prompt_variant": row["prompt_variant"],
                 "missing_variables": row["missing_variables"], "reason": "missing_variable",
@@ -233,27 +266,8 @@ def run_row(row: dict, client: ChatClient, model: str, extra: dict, max_tokens: 
     choices = (result.response or {}).get("choices")
     choice = choices[0] if isinstance(choices, list) and len(choices) == 1 and isinstance(choices[0], dict) else {}
     record["length"] = choice.get("finish_reason") == "length"
-    if row["id"] == "hs-13":
-        payload = {}
-        if result.error and result.error.startswith(f"HTTP {result.status}: "):
-            try:
-                parsed = json.loads(result.error.split(": ", 1)[1])
-                if isinstance(parsed, dict):
-                    payload = parsed
-            except ValueError:
-                pass
-        error = payload.get("error")
-        error_type = error.get("type") if isinstance(error, dict) else None
-        record["error_type"] = error_type
-        record["error_message"] = error.get("message") if isinstance(error, dict) else None
-        generated_output = any(payload.get(key) for key in ("choices", "content", "output", "completion", "response"))
-        record["checks"] = {
-            "typed_oversize_refusal": result.status is not None and 400 <= result.status < 500
-            and error_type in ("context_length_exceeded", "exceed_context_size_error")
-            and not generated_output,
-        }
-        record["diagnostics"] = {"zagdb_detector_compatible": error_type == "context_length_exceeded"}
-    elif result.ok:
+    response = result.response or {}
+    if result.ok:
         record["length"] = choice.get("finish_reason") == "length"
         message = choice.get("message")
         if not isinstance(message, dict):
@@ -271,7 +285,43 @@ def run_row(row: dict, client: ChatClient, model: str, extra: dict, max_tokens: 
             record["checks"] = {"shape": True, **(score_naming(answer, row["rules"]) if row["family"] == "ontology_naming" else score_summary(answer, row["rules"]))}
     else:
         record["checks"] = {"request": False}
-    record["passed"] = all(record["checks"].values())
+    if row["id"] == "hs-13":
+        if result.ok:
+            usage = response.get("usage")
+            prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+            sources = [response, response.get("__verbose"), response.get("timings"), choice]
+            truncated = any(source.get(key) is True for source in sources if isinstance(source, dict)
+                            for key in ("truncated", "prompt_truncated", "input_truncated"))
+            fits = type(prompt_tokens) is int and 0 <= prompt_tokens < context_tokens and not truncated
+            record["diagnostics"] = {"content_checks": record["checks"],
+                                     "content_passed": all(record["checks"].values())}
+            record["prompt_tokens"] = prompt_tokens
+            record["input_truncated"] = truncated
+            record["excluded_from_scoring"] = fits
+            record["outcome"] = "not_oversize_for_config" if fits else "invalid_oversize_acceptance"
+            record["checks"] = {} if fits else {"oversize_input_handling": False}
+        else:
+            payload = {}
+            if result.error and result.error.startswith(f"HTTP {result.status}: "):
+                try:
+                    parsed = json.loads(result.error.split(": ", 1)[1])
+                    if isinstance(parsed, dict):
+                        payload = parsed
+                except ValueError:
+                    pass
+            error = payload.get("error")
+            error_type = error.get("type") if isinstance(error, dict) else None
+            record["error_type"] = error_type
+            record["error_message"] = error.get("message") if isinstance(error, dict) else None
+            generated_output = any(payload.get(key) for key in ("choices", "content", "output", "completion", "response"))
+            record["checks"] = {
+                "typed_oversize_refusal": result.status is not None and 400 <= result.status < 500
+                and error_type in ("context_length_exceeded", "exceed_context_size_error")
+                and not generated_output,
+            }
+            record["diagnostics"] = {"zagdb_detector_compatible": error_type == "context_length_exceeded"}
+        record["n_ctx"] = context_tokens
+    record["passed"] = None if record.get("excluded_from_scoring") else all(record["checks"].values())
     return record
 
 
@@ -279,13 +329,25 @@ def summarize(rows: list[dict], wall: float) -> dict:
     result = {}
     for family, variant in dict.fromkeys((r["family"], r.get("prompt_variant", r["family"])) for r in rows):
         selected = [r for r in rows if r["family"] == family and r.get("prompt_variant", r["family"]) == variant]
+        scored = [r for r in selected if not r.get("excluded_from_scoring")]
         latencies = sorted(r["latency_seconds"] for r in selected)
         counts: Counter = Counter()
-        for row in selected:
+        for row in scored:
             for key, passed in row["checks"].items():
                 counts[key] += int(passed)
-        result[f"{family}:{variant}"] = {"rows": len(selected), "passed": sum(r["passed"] for r in selected), "pass_rate": sum(r["passed"] for r in selected) / len(selected) if selected else None, "per_check_pass_counts": dict(counts), "shape_failures": sum(r["shape_failure"] for r in selected), "length_count": sum(r["length"] for r in selected), "latency_p50": statistics.median(latencies) if latencies else None, "latency_p95": latencies[math.ceil(len(latencies) * .95) - 1] if latencies else None, "wall_seconds": wall}
-        compatibility = [r["diagnostics"]["zagdb_detector_compatible"] for r in selected if "diagnostics" in r]
+        result[f"{family}:{variant}"] = {"rows": len(selected), "scored_rows": len(scored),
+                                       "not_oversize_for_config_count": len(selected) - len(scored),
+                                       "passed": sum(r["passed"] for r in scored),
+                                       "failed": sum(r["passed"] is False for r in scored),
+                                       "pass_rate": sum(r["passed"] for r in scored) / len(scored) if scored else None,
+                                       "per_check_pass_counts": dict(counts),
+                                       "shape_failures": sum(r["shape_failure"] for r in scored),
+                                       "length_count": sum(r["length"] for r in scored),
+                                       "latency_p50": statistics.median(latencies) if latencies else None,
+                                       "latency_p95": latencies[math.ceil(len(latencies) * .95) - 1] if latencies else None,
+                                       "wall_seconds": wall}
+        compatibility = [r["diagnostics"]["zagdb_detector_compatible"] for r in selected
+                         if "zagdb_detector_compatible" in r.get("diagnostics", {})]
         result[f"{family}:{variant}"]["zagdb_detector_compatible_count"] = sum(compatibility)
         result[f"{family}:{variant}"]["zagdb_detector_checked_count"] = len(compatibility)
     return result
@@ -301,6 +363,7 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--extra-body", default="{}")
     parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument("--context-tokens", type=int, help="Per-slot context fallback if /props is unavailable")
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--measurement-timeout", type=float, default=600)
     parser.add_argument("--output", type=Path, required=True)
@@ -317,16 +380,20 @@ def main() -> int:
             raise ValueError("extra-body permits only chat_template_kwargs")
         if args.max_tokens <= 0 or args.concurrency <= 0 or not math.isfinite(args.measurement_timeout) or args.measurement_timeout <= 0:
             raise ValueError("budgets must be positive and finite")
+        if args.context_tokens is not None and args.context_tokens <= 0:
+            raise ValueError("context-tokens must be positive")
         api_key = os.environ.get(args.api_key_env, "")
         if not api_key:
             raise ValueError(f"{args.api_key_env} is unset")
-        reserve_output(args.output)
         client = ChatClient(args.base_url, api_key, args.measurement_timeout, artifacts_dir=args.artifacts_dir, label=args.label, nonce=args.output.stem)
+        context = context_settings(client, args.context_tokens)
+        reserve_output(args.output)
         started = time.monotonic()
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-            results = list(pool.map(lambda row: run_row(row, client, args.model, extra, args.max_tokens), rows))
+            results = list(pool.map(lambda row: run_row(row, client, args.model, extra, args.max_tokens, context["n_ctx"]), rows))
         wall = time.monotonic() - started
-        report = {"version": "zagdb-generative-v2", "label": args.label, "model": args.model,
+        report = {"version": "zagdb-generative-v3", "label": args.label, "model": args.model,
+                  "context": context,
                   "hub_summary_prompt_statuses": ["UNVERIFIED_PROPOSED_EVAL_ONLY", CANDIDATE_STATUS],
                   "candidate_template_sha256": CANDIDATE_SHA256,
                   "summary": summarize(results, wall), "rows": results}
