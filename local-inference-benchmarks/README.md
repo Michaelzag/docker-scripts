@@ -381,8 +381,9 @@ They do not replace the operator's actual-model three-case smoke.
 starting containers, changing GPUs, executing generated code or calling a judge.
 It reuses the frozen retaining `ChatClient`, request builder and shared output
 ownership/persistence helpers. It does not change the utility or knowledge
-runner's request whitelist. Use the candidate's qualified **T1 native profile**,
-not a new profile grid; do not disable its native thinking.
+runner's request whitelist. Use the candidate's qualified **native profile**,
+not a new profile grid; do not disable its native thinking. Its qualified
+temperature is preserved, including when it is not T1.
 
 The operator chooses `--parallel 4` or `6` and one explicit allocation mode:
 

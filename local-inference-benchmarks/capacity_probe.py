@@ -458,8 +458,6 @@ def main() -> int:
         if not math.isfinite(args.measurement_timeout) or args.measurement_timeout <= 0:
             raise ValueError("positive finite timeout required")
         profile = native_profile(args.extra_body_json)
-        if profile.get("temperature", 1.0) != 1.0:
-            raise ValueError("capacity contract requires the qualified T1 native profile")
         template = profile.get("chat_template_kwargs", {})
         if not isinstance(template, dict) or template.get("enable_thinking") is False or template.get("thinking") is False:
             raise ValueError("thinking-off overrides are forbidden")
