@@ -234,15 +234,25 @@ def run_row(row: dict, client: ChatClient, model: str, extra: dict, max_tokens: 
     choice = choices[0] if isinstance(choices, list) and len(choices) == 1 and isinstance(choices[0], dict) else {}
     record["length"] = choice.get("finish_reason") == "length"
     if row["id"] == "hs-13":
-        error = {}
+        payload = {}
         if result.error and result.error.startswith(f"HTTP {result.status}: "):
             try:
-                error = json.loads(result.error.split(": ", 1)[1]).get("error", {})
-            except (ValueError, AttributeError):
+                parsed = json.loads(result.error.split(": ", 1)[1])
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except ValueError:
                 pass
-        record["error_type"] = error.get("type") if isinstance(error, dict) else None
+        error = payload.get("error")
+        error_type = error.get("type") if isinstance(error, dict) else None
+        record["error_type"] = error_type
         record["error_message"] = error.get("message") if isinstance(error, dict) else None
-        record["checks"] = {"typed_oversize_refusal": result.status is not None and result.status >= 400 and isinstance(error, dict) and (error.get("type") == "context_length_exceeded" or error.get("code") == "context_length_exceeded")}
+        generated_output = any(payload.get(key) for key in ("choices", "content", "output", "completion", "response"))
+        record["checks"] = {
+            "typed_oversize_refusal": result.status is not None and 400 <= result.status < 500
+            and error_type in ("context_length_exceeded", "exceed_context_size_error")
+            and not generated_output,
+        }
+        record["diagnostics"] = {"zagdb_detector_compatible": error_type == "context_length_exceeded"}
     elif result.ok:
         record["length"] = choice.get("finish_reason") == "length"
         message = choice.get("message")
@@ -275,6 +285,9 @@ def summarize(rows: list[dict], wall: float) -> dict:
             for key, passed in row["checks"].items():
                 counts[key] += int(passed)
         result[f"{family}:{variant}"] = {"rows": len(selected), "passed": sum(r["passed"] for r in selected), "pass_rate": sum(r["passed"] for r in selected) / len(selected) if selected else None, "per_check_pass_counts": dict(counts), "shape_failures": sum(r["shape_failure"] for r in selected), "length_count": sum(r["length"] for r in selected), "latency_p50": statistics.median(latencies) if latencies else None, "latency_p95": latencies[math.ceil(len(latencies) * .95) - 1] if latencies else None, "wall_seconds": wall}
+        compatibility = [r["diagnostics"]["zagdb_detector_compatible"] for r in selected if "diagnostics" in r]
+        result[f"{family}:{variant}"]["zagdb_detector_compatible_count"] = sum(compatibility)
+        result[f"{family}:{variant}"]["zagdb_detector_checked_count"] = len(compatibility)
     return result
 
 
