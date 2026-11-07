@@ -542,11 +542,16 @@ Each row has `id`, `family`, `difficulty`, `state`, `question`, `gold`, `special
 and optionally `rationale`. `state` is a native Structured string, object or array.
 `question` has `id`, `type` (`noul`, `choice`, `score`), `text`, and an ordered
 `options` array of `{id, text}`. `gold` has `option_ids` (an acceptable set) and
-`defer_acceptable`; `special` maps `new`, `unknown`, `defer` to option ids or null.
+`defer_acceptable`; `special` maps `new`, `unknown`, `defer` to lists of option ids
+(including multiple ids); an empty list means absent. A single id string and null
+remain accepted at the JSON boundary. Internally markers are immutable sets:
+NEW/unknown gold membership uses set intersection, and prediction uses membership.
 Noul requires the ids `true` and `false`. Score option ids remain fixture identities;
 the native legend uses their **original zero-based order**, not prompt order.
 Gold and rationale never enter the model prompt. Defer is correct **only** when
-`defer_acceptable`, even if someone lists it among gold ids.
+`defer_acceptable` and the selected id is in the defer set, even if a disallowed
+defer id is among gold ids. Defer confusion treats `defer_acceptable` as its
+expected label; NEW/unknown confusion uses intersection with the gold set.
 
 The adapter converts question text to native `instructions`; choice and noul
 criteria are ordered id-to-text maps, score criteria are ordered descriptions.
