@@ -13,18 +13,19 @@ agent model:
 
 It uses only the Python standard library and OpenAI-compatible endpoints.  For
 llama.cpp, the response's ``timings`` object gives prompt/decode measurements
-and cache reuse directly.  Results intentionally omit generated text and API
-keys; only hashes, sizes, timing, usage, tool validity, and finish reasons are
-written to disk.
+and cache reuse directly. By default generated text is omitted; --artifacts-dir
+opts into complete nonsecret request/response evidence for every HTTP attempt.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import dataclasses
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -34,8 +35,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 DEFAULT_MEASUREMENT_TIMEOUT = 900.0
@@ -149,13 +153,73 @@ class ApiResult:
     status: int | None = None
     response: dict[str, Any] | None = None
     error: str | None = None
+    artifact: str | None = None
+
+
+def timestamp_pair() -> dict[str, str]:
+    now = dt.datetime.now(dt.timezone.utc)
+    return {"utc": now.isoformat(), "et": now.astimezone(ZoneInfo("America/New_York")).isoformat()}
+
+
+def redact_persistence(value: object, api_key: str) -> object:
+    """Copy explicit evidence data, removing literal or JSON-escaped key echoes."""
+    if not api_key:
+        return value
+    # JSON permits any mixture of literal and Unicode-escaped characters.
+    # Match those representations in nested JSON strings (tool arguments, error
+    # detail, answers) as well as already-decoded response fields.
+    pattern = re.compile("".join(
+        "(?:" + re.escape(char) + "|" + (
+            r"\\u(?i:" + f"{ord(char):04x}" + ")"
+            if ord(char) <= 0xFFFF else re.escape(json.dumps(char)[1:-1])
+        ) + ")" for char in api_key
+    ))
+
+    def copy_value(item: object) -> object:
+        if isinstance(item, str):
+            return pattern.sub("[REDACTED_API_KEY]", item)
+        if isinstance(item, list):
+            return [copy_value(part) for part in item]
+        if isinstance(item, tuple):
+            return tuple(copy_value(part) for part in item)
+        if isinstance(item, dict):
+            return {str(copy_value(key)): copy_value(part) for key, part in item.items()}
+        return item
+
+    return copy_value(value)
+
+
+def redact_wire_body(raw: bytes, api_key: str) -> tuple[bytes, bool]:
+    """Preserve original wire bytes unless a decoded credential needs removal."""
+    if not api_key:
+        return raw, False
+    try:
+        decoded = json.loads(raw)
+    except (ValueError, RecursionError):
+        # Surrogate escape round-trips unrelated non-UTF8 bytes exactly while
+        # the existing matcher removes literal or escaped keys in partial JSON.
+        safe_text = redact_persistence(raw.decode("utf8", errors="surrogateescape"), api_key)
+        assert isinstance(safe_text, str)
+        safe = safe_text.encode("utf8", errors="surrogateescape")
+        return safe, safe != raw
+    sanitized = redact_persistence(decoded, api_key)
+    if sanitized == decoded:
+        return raw, False
+    return json.dumps(sanitized, ensure_ascii=False, separators=(",", ":")).encode(), True
 
 
 class ChatClient:
-    def __init__(self, base_url: str, api_key: str, measurement_timeout: float):
+    def __init__(
+        self, base_url: str, api_key: str, measurement_timeout: float,
+        *, artifacts_dir: Path | None = None, label: str = "unspecified",
+        nonce: str = "",
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.measurement_timeout = measurement_timeout
+        self.artifacts_dir = artifacts_dir
+        self.label = label
+        self.nonce = nonce
         parsed = urllib.parse.urlsplit(self.base_url)
         self.origin = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
@@ -165,54 +229,119 @@ class ChatClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def post(self, path: str, body: dict[str, Any]) -> ApiResult:
-        url = f"{self.base_url}/{path.lstrip('/')}"
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body, separators=(",", ":")).encode(),
-            headers=self._headers(),
-        )
+    def post(
+        self, path: str, body: dict[str, Any], *, case_id: str = "",
+        origin: bool = False, timeout: float | None = None,
+    ) -> ApiResult:
+        """Nonstreaming wall time ends at EOF; it is not token TTFT."""
+        url = f"{self.origin if origin else self.base_url}/{path.lstrip('/')}"
+        request_bytes = json.dumps(body, separators=(",", ":")).encode()
+        req = urllib.request.Request(url, data=request_bytes, headers=self._headers())
+        started_at = timestamp_pair()
         started = time.monotonic()
-        try:
-            with urllib.request.urlopen(req, timeout=self.measurement_timeout) as response:
-                payload = json.loads(response.read())
-                return ApiResult(
-                    ok=True,
-                    status=response.status,
-                    wall_seconds=time.monotonic() - started,
-                    response=payload,
-                )
-        except urllib.error.HTTPError as exc:
-            detail = exc.read(4096).decode(errors="replace")
-            return ApiResult(
-                ok=False,
-                status=exc.code,
-                wall_seconds=time.monotonic() - started,
-                error=f"HTTP {exc.code}: {detail}",
-            )
-        except Exception as exc:  # preserve a result for every attempted cell
-            return ApiResult(
-                ok=False,
-                wall_seconds=time.monotonic() - started,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+        raw = bytearray()
+        eof_seconds: float | None = None
+        result = ApiResult(ok=False, wall_seconds=0)
 
-    def chat(self, body: dict[str, Any]) -> ApiResult:
-        return self.post("chat/completions", body)
+        def read_body(read_chunk: Callable[[int], bytes], expected_length: int | None) -> None:
+            # HTTPResponse.read1 returns available bytes after one underlying
+            # read. A later socket timeout must not erase that returned prefix.
+            collected = 0
+            while chunk := read_chunk(65536):
+                raw.extend(chunk)
+                collected += len(chunk)
+            # HTTPResponse.length is None for chunked/unknown-length bodies.
+            # read1 itself does not reject EOF while declared bytes remain.
+            if expected_length is not None and collected < expected_length:
+                raise http.client.IncompleteRead(b"", expected_length - collected)
+
+        try:
+            with urllib.request.urlopen(
+                req, timeout=self.measurement_timeout if timeout is None else timeout,
+            ) as response:
+                result.status = response.status
+                read_body(response.read1, getattr(response, "length", None))
+                eof_seconds = time.monotonic() - started
+                payload = json.loads(raw)
+                if not isinstance(payload, dict):
+                    raise TypeError("response must be a JSON object")
+                result.response = payload
+                result.ok = True
+        except urllib.error.HTTPError as exc:
+            result.status = exc.code
+            try:
+                read_body(exc.read1, getattr(exc, "length", None))
+                eof_seconds = time.monotonic() - started
+                result.error = f"HTTP {exc.code}: {raw[:4096].decode(errors='replace')}"
+            except http.client.IncompleteRead as read_error:
+                raw.extend(read_error.partial)
+                result.error = f"HTTP {exc.code}: IncompleteRead: {read_error}"
+            except (OSError, http.client.HTTPException) as read_error:
+                result.error = f"HTTP {exc.code}: {type(read_error).__name__}: {read_error}"
+            finally:
+                exc.close()
+        except http.client.IncompleteRead as exc:
+            raw.extend(exc.partial)
+            result.error = f"IncompleteRead: {exc}"
+        except (urllib.error.URLError, OSError, ValueError, TypeError, http.client.HTTPException) as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        result.wall_seconds = time.monotonic() - started
+        ended_at = timestamp_pair()
+        if self.artifacts_dir is not None:
+            self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+            # UUID + exclusive creation are safe across threads and processes.
+            artifact = self.artifacts_dir / f"{time.time_ns()}-{uuid.uuid4().hex}.json"
+            safe_raw, response_redacted = redact_wire_body(bytes(raw), self.api_key)
+            safe_request, request_redacted = redact_wire_body(request_bytes, self.api_key)
+            choices = (result.response or {}).get("choices")
+            if not isinstance(choices, list):
+                choices = []
+            record = {
+                "schema_version": 1, "case_id": case_id, "label": self.label,
+                "nonce": self.nonce, "model": body.get("model"), "path": path,
+                "started": started_at, "ended": ended_at,
+                "measurement_timeout_seconds": self.measurement_timeout if timeout is None else timeout,
+                "request": body, "request_body_utf8": safe_request.decode(),
+                "request_sha256": hashlib.sha256(request_bytes).hexdigest(),
+                "messages_sha256": hashlib.sha256(json.dumps(body.get("messages", body.get("content")), sort_keys=True).encode()).hexdigest(),
+                "response_body_utf8": safe_raw.decode(errors="replace"),
+                "response_body_base64": base64.b64encode(safe_raw).decode(),
+                "response_sha256": hashlib.sha256(raw).hexdigest(),
+                "response": result.response, "http_status": result.status,
+                "ok": result.ok, "error": result.error,
+                "wall_seconds": result.wall_seconds,
+                "nonstream_eof_seconds": eof_seconds, "ttft_seconds": None,
+                "usage": (result.response or {}).get("usage"),
+                "finish_reasons": [choice.get("finish_reason") for choice in choices if isinstance(choice, dict)],
+                "credential_redaction": response_redacted or request_redacted,
+            }
+            # Only this explicit evidence record is serialized, never headers,
+            # environment, Request, or the client (which owns the credential).
+            safe_record = redact_persistence(record, self.api_key)
+            assert isinstance(safe_record, dict)
+            # The two wire-body views must encode the exact same sanitized
+            # bytes; never run a text credential replacement over base64.
+            safe_record["response_body_utf8"] = safe_raw.decode(errors="replace")
+            safe_record["response_body_base64"] = base64.b64encode(safe_raw).decode()
+            safe_record["request_body_utf8"] = safe_request.decode()
+            with artifact.open("x") as output:
+                json.dump(safe_record, output, indent=2, sort_keys=True)
+                output.write("\n")
+            result.artifact = str(artifact)
+        if self.api_key and result.error:
+            result.error = result.error.replace(self.api_key, "[REDACTED_API_KEY]")
+        return result
+
+    def chat(self, body: dict[str, Any], *, case_id: str = "") -> ApiResult:
+        return self.post("chat/completions", body, case_id=case_id)
 
     def tokenize(self, content: str) -> int | None:
-        req = urllib.request.Request(
-            f"{self.origin}/tokenize",
-            data=json.dumps({"content": content}, separators=(",", ":")).encode(),
-            headers=self._headers(),
+        result = self.post(
+            "tokenize", {"content": content}, origin=True, timeout=60,
+            case_id="tokenize_calibration",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as response:
-                payload = json.loads(response.read())
-            tokens = payload.get("tokens")
-            return len(tokens) if isinstance(tokens, list) else None
-        except Exception:
-            return None
+        tokens = (result.response or {}).get("tokens")
+        return len(tokens) if result.ok and isinstance(tokens, list) else None
 
 
 def code_module(index: int, nonce: str) -> str:
@@ -349,9 +478,10 @@ def request_body(
         "messages": messages,
         "max_tokens": max_tokens,
     }
-    if temperature is not None:
-        body["temperature"] = temperature
-        if temperature == 0:
+    effective_temperature = REQUEST_BODY_EXTRA.get("temperature", temperature)
+    if effective_temperature is not None:
+        body["temperature"] = effective_temperature
+        if effective_temperature == 0:
             body["top_k"] = 1
     if tools is not None:
         body["tools"] = tools
@@ -464,13 +594,13 @@ def run_reviews(
     digest = hashlib.sha256(prompt.encode()).hexdigest()
     rows: list[dict[str, Any]] = []
     for max_tokens in output_tokens:
-        result = client.chat(request_body(model, messages, max_tokens, temperature))
+        result = client.chat(request_body(model, messages, max_tokens, temperature), case_id=f"review_{max_tokens}")
         rows.append(
             summarize_result(
                 f"review_{max_tokens}", result, cutoff, digest, len(prompt)
             )
         )
-    warm = client.chat(request_body(model, messages, 128, temperature))
+    warm = client.chat(request_body(model, messages, 128, temperature), case_id="review_warm_128")
     rows.append(summarize_result("review_warm_128", warm, cutoff, digest, len(prompt)))
     return rows
 
@@ -511,7 +641,8 @@ def run_tool_loop(
             }
         )
         result = client.chat(
-            request_body(model, messages, tool_max_tokens, temperature, TOOLS)
+            request_body(model, messages, tool_max_tokens, temperature, TOOLS),
+            case_id=f"tool_turn_{index + 1}_{expected}",
         )
         row = summarize_result(
             f"tool_turn_{index + 1}_{expected}", result, cutoff, prompt_digest, len(prompt)
@@ -533,7 +664,7 @@ def run_tool_loop(
         if calls:
             for call in calls:
                 function = call.get("function") or {}
-                name = function.get("name")
+                name = function.get("name") or ""
                 try:
                     arguments = json.loads(function.get("arguments") or "{}")
                     args_valid = isinstance(arguments, dict)
@@ -576,7 +707,8 @@ def run_tool_loop(
             temperature,
             TOOLS,
             tool_choice="auto",
-        )
+        ),
+        case_id="tool_loop_final",
     )
     final_row = summarize_result("tool_loop_final", final, cutoff, prompt_digest, len(prompt))
     return {
@@ -613,8 +745,9 @@ def run_concurrency(
             executor.submit(
                 client.chat,
                 request_body(model, [{"role": "user", "content": prompt}], max_tokens, temperature),
+                case_id=f"concurrent_{index + 1}",
             )
-            for prompt in prompts
+            for index, prompt in enumerate(prompts)
         ]
         results = [future.result() for future in futures]
     wall = time.monotonic() - started
@@ -715,6 +848,7 @@ def parse_args() -> argparse.Namespace:
         help="Environment variable containing the API key; the key is never recorded",
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--artifacts-dir", type=Path, help="Retain complete nonsecret HTTP evidence")
     parser.add_argument(
         "--suite",
         choices=("all", "review", "tool-loop", "concurrency", "context"),
@@ -780,8 +914,11 @@ def main() -> int:
     if not api_key:
         print(f"error: {args.api_key_env} is unset", file=sys.stderr)
         return 2
-    client = ChatClient(args.base_url, api_key, args.measurement_timeout)
     nonce = args.fixture_nonce or f"{args.label}-{time.time_ns()}"
+    client = ChatClient(
+        args.base_url, api_key, args.measurement_timeout,
+        artifacts_dir=args.artifacts_dir, label=args.label, nonce=nonce,
+    )
     if args.fixture_modules is not None:
         if args.fixture_modules < 1:
             print("error: --fixture-modules must be positive", file=sys.stderr)
@@ -860,7 +997,8 @@ def main() -> int:
                 [{"role": "user", "content": context_prompt}],
                 args.context_output_tokens,
                 0,
-            )
+            ),
+            case_id="context_probe",
         )
         context_summary = summarize_result(
             "context_probe",
