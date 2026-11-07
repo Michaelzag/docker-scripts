@@ -576,27 +576,36 @@ is supported.
 ### Probability contract
 
 Direct mode calls `/apply-template` with `--direct-template-kwargs JSON`, appends
-`--direct-prefill STRING` (empty by default), then scores **every key explicitly**.
-For each key, `/tokenize` determines its canonical token count without special
-tokens; `/completion` forces that exact key with a grammar, `temperature=0`,
-`n_probs>=20`, `cache_prompt=true`, and **`post_sampling_probs=false`**.
-The authoritative field is each generated token's own
-`completion_probabilities[i].logprob`, paired with its `.token`.
-`top_logprobs` is **not** sufficient: a valid key can lie outside top-k.
-When the generated token also appears there, the two scores must agree.
-Missing own scores, mismatches, malformed output, or partial token coverage
-are item-variant **coverage failures**, never invented zero probabilities.
+`--direct-prefill STRING` (empty by default), and tokenizes every key without
+special tokens. When all keys are distinct single tokens, the primary path is
+**one `/completion` forward pass for all keys**: a union key grammar,
+`temperature=0`, `n_probs>=max(50,K+20)`, `cache_prompt=true`, and
+**`post_sampling_probs=false`**. Scores come from that response's
+`completion_probabilities[0].top_logprobs` plus the generated token's own
+`.token` / `.logprob` (the two must agree when both report it).
+This avoids assembling an apparently simultaneous distribution from numerically
+different cached/concurrently batched forward passes.
 
-Multi-token keys are scored by summing every generated token's pre-constraint
-logprob for that forced sequence. Probabilities are renormalized over complete
-key sequence scores using log-sum-exp, then mapped back to original option ids.
-`sequence_logprobs` and `first_token_logprobs` retain the unnormalized evidence.
-`leaked_mass = 1 - sum(raw key first-token probabilities)`, counting a shared
-first token only once. For single-token distinct keys this is exactly non-key
-mass; for multi-token keys it describes only the first step, **not** total
-sequence complement mass. Sequence scores are for the server tokenizer's
-canonical key encoding, not a sum over alternative tokenizations.
-Constrained post-sampling probabilities would hide uncertainty and are never used.
+A key can still fall outside top-k. **Only missing keys** get individual
+forced-key fallback requests, using the generated token's own pre-constraint
+logprob, never an invented zero. Such cases record `scoring_source="mixed"` and
+`mixed_sources=true`; complete one-forward-pass cases record `"single"`.
+Multi-token/shared-first-token keys retain exact forced-sequence scoring:
+sum every generated token's own logprob, with cache reuse, and mark the source
+mixed. All complete key scores are renormalized with log-sum-exp and mapped to
+original option ids. Missing scores, malformed output and token coverage gaps
+remain coverage failures. `sequence_logprobs` and `first_token_logprobs` retain
+the unnormalized evidence.
+
+`raw_key_mass` is the sum of raw key first-token probabilities, counting a shared
+first token once. `leaked_mass=max(0,1-raw_key_mass)` describes only the first
+step for multi-token keys, not sequence complement mass. Single-source sums
+above one (beyond the existing 1e-5 tolerance) are errors. Mixed-source sums
+may overshoot due to cross-request numeric variance; they are renormalized,
+**not silently treated as single-source evidence**. Reports count single/mixed
+sources and show raw mass count/mean/max, including measured sums on failed cases.
+Sequence scores use the server tokenizer's canonical encoding, not a sum over
+alternative tokenizations. Post-sampling probabilities are never used.
 
 Thinking mode uses `/v1/chat/completions` with `--thinking-extra-body JSON`,
 guarded by the existing native-profile allowlist: no request-shape/budget overrides.
@@ -618,11 +627,37 @@ assume the two conventions are interchangeable.
 Noul records its probability and correct/wrong/ambiguous counts at minima
 0.6, 0.7 and 0.8: the middle band is `1-min < P(true) < min`; confidently
 wrong answers are wrong, not ambiguous.
-Usage sums the **real reported counts across all per-key completion requests**,
-not tokenizer/template calls (cached prompts may reduce evaluated input counts).
-It reads `usage.prompt_tokens/completion_tokens`, `tokens_evaluated/predicted`,
-or `timings.prompt_n/predicted_n`; missing usage leaves `native_response=null`,
-never fake zero usage. `native_response_n` exposes that coverage.
+Usage sums the **real reported counts of completion requests producing draw 1**
+(one primary pass plus missing-key fallbacks, or exact sequence requests), not
+tokenizer/template calls or analysis-only repeat draws. Cached prompts can
+reduce evaluated input counts. It reads `usage.prompt_tokens/completion_tokens`,
+`tokens_evaluated/predicted`, or `timings.prompt_n/predicted_n`; missing usage leaves
+`native_response=null`, never fake zero usage. `native_response_n` exposes coverage.
+
+### Repeat-draw drift diagnostics
+
+`--repeat-draws N` defaults to **1 (off)**. With N>1, each direct/native
+item-variant repeats the same scoring prompt/request and order N times within
+its worker at the configured concurrency (direct cache settings stay unchanged).
+Template/tokenizer preparation happens once. A direct draw uses one forward pass
+plus only necessary missing-key fallbacks; multi-token keys repeat their exact
+sequence-scoring group. **Draw 1 alone determines accuracy, distribution,
+native response and usage**, matching ZagDB's first accepted-response persistence
+contract (C-3.5). Later draws are analysis, never voting or retries: an extra-draw
+failure does not invalidate draw 1, and a later success never rescues failed draw 1.
+Thinking mode remains accuracy-only and is not repeated.
+
+Every draw retains its distribution, normalized pmax, argmax, source, raw mass
+and error; HTTP artifacts include `/draw-N` in their case ids. Per-case `drift`
+reports valid/failed draw counts, all unordered valid draw pairs' mean/max
+absolute normalized-pmax difference, mean/max absolute per-option probability
+difference, and argmax flip-pair rate. A floor crosses when
+`min(pmax)<floor<=max(pmax)` for floors 0.5, 0.6, 0.7, 0.8 and 0.9.
+Fewer than two valid draws yields null comparisons, not invented stability.
+Aggregate drift weights means by comparison counts, retains maxima and flip
+rates, and counts cases crossing each floor; sample counts remain explicit.
+Latency/throughput and request-error diagnostics include all analysis work,
+while primary accuracy/coverage denominators still count item-variants, not draws.
 
 ### Native endpoint mode
 

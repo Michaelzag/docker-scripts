@@ -22,6 +22,7 @@ import random
 import statistics
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from string import Template
 from typing import cast
@@ -105,6 +106,19 @@ class Settings:
     thinking_profile: dict[str, object]
     max_tokens: int
     state_token_warning: float = 16384
+    repeat_draws: int = 1
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class DistributionDraw:
+    probabilities: dict[str, float]
+    sequence_logprobs: dict[str, float]
+    first_token_logprobs: dict[str, float]
+    raw_key_mass: float | None
+    scoring_source: str | None
+    normalized_pmax: float | None
+    option_id: str | None
+    error: str | None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -133,6 +147,11 @@ class Outcome:
     state_bytes: int
     state_estimated_tokens: float
     state_token_warning_exceeded: bool
+    scoring_source: str | None
+    mixed_sources: bool
+    raw_key_mass: float | None
+    draws: tuple[DistributionDraw, ...]
+    drift: dict[str, object]
 
 
 def parse_item(value: object) -> Item:
@@ -172,10 +191,8 @@ def parse_item(value: object) -> Item:
             special[key] = markers
     if any(not markers <= option_ids for markers in special.values()):
         raise ValueError("invalid special option markers")
-    if not gold <= option_ids or type(defer) is not bool or (not gold and not defer):
+    if not gold <= option_ids or type(defer) is not bool or (not gold and not (defer and special.get("defer"))):
         raise ValueError("gold must name available options or permit defer")
-    if not (gold - special.get("defer", frozenset())) and not (defer and special.get("defer")):
-        raise ValueError("gold must contain an effective correct option")
     return Item(text_value(row.get("id")), text_value(row.get("family")),
                 text_value(row.get("difficulty")), state, question, options, gold, defer, special)
 
@@ -367,9 +384,9 @@ def native_probabilities(item: Item, variant: Variant, response: dict[str, objec
 def is_correct(item: Item, option_id: str | None) -> bool:
     if option_id is None:
         return False
-    if option_id in item.special.get("defer", frozenset()):
-        return item.defer_acceptable
-    return option_id in item.gold
+    return option_id in item.gold or (
+        item.defer_acceptable and option_id in item.special.get("defer", frozenset())
+    )
 
 
 def parse_final_key(content: str, keys: dict[str, str]) -> str | None:
@@ -409,21 +426,145 @@ def normalize(scores: dict[str, float]) -> dict[str, float]:
     return {key: weight / total for key, weight in weights.items()}
 
 
+def distribution_draw(
+    probabilities: dict[str, float], scores: dict[str, float], first: dict[str, float],
+    raw_mass: float | None, source: str | None, error: str | None = None,
+) -> DistributionDraw:
+    normalized = None
+    chosen = None
+    if probabilities:
+        chosen = max(probabilities, key=lambda key: probabilities[key])
+        k = len(probabilities)
+        normalized = (k * probabilities[chosen] - 1) / (k - 1) if k > 1 else 1.0
+    return DistributionDraw(probabilities, scores, first, raw_mass, source, normalized, chosen, error)
+
+
+def score_direct_draw(
+    mapping: dict[str, str], token_ids: dict[str, tuple[int, ...]],
+    complete_keys: Callable[[str, int], dict[str, object]],
+) -> DistributionDraw:
+    """Prefer one forward pass; force only missing keys or exact key sequences."""
+    single_token = all(len(tokens) == 1 for tokens in token_ids.values())
+    single_token = single_token and len({tokens[0] for tokens in token_ids.values()}) == len(mapping)
+    source = "single" if single_token else "mixed"
+    scores: dict[str, float] = {}
+    first: dict[str, float] = {}
+    first_by_token: dict[str, float] = {}
+    raw_mass = None
+    try:
+        if single_token:
+            grammar = "root ::= " + " | ".join(json.dumps(key) for key in mapping)
+            response = complete_keys(grammar, 1)
+            generated = text_value(response.get("content"))
+            if generated not in mapping:
+                raise ValueError("single-pass generation did not return an option key")
+            own_score, _, _ = forced_score(response, generated, 1)
+            entry = object_value(array_value(response.get("completion_probabilities"))[0])
+            for candidate in array_value(entry.get("top_logprobs", [])):
+                top = object_value(candidate)
+                key = top.get("token")
+                if isinstance(key, str) and key in mapping:
+                    score = logprob(top.get("logprob"))
+                    if key in scores and not math.isclose(scores[key], score, abs_tol=1e-5):
+                        raise ValueError("conflicting key logprobs in one forward pass")
+                    scores[key] = score
+            scores[generated] = own_score
+            first.update(scores)
+            first_by_token.update(scores)
+            if len(scores) < len(mapping):
+                source = "mixed"
+        for key in mapping:
+            if key in scores:
+                continue
+            response = complete_keys("root ::= " + json.dumps(key), len(token_ids[key]))
+            score, token, first_score = forced_score(response, key, len(token_ids[key]))
+            scores[key], first[key] = score, first_score
+            if token in first_by_token and not math.isclose(first_by_token[token], first_score, abs_tol=1e-5):
+                raise ValueError("inconsistent first-token scores across forced keys")
+            first_by_token[token] = first_score
+        raw_mass = sum(math.exp(value) for value in first_by_token.values())
+        if source == "single" and raw_mass > 1 + 1e-5:
+            raise ValueError("pre-constraint first-token key mass exceeds one")
+        by_key = normalize(scores)
+        probabilities = {mapping[key]: value for key, value in by_key.items()}
+        return distribution_draw(probabilities, scores, first, raw_mass, source)
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        return distribution_draw({}, scores, first, raw_mass, source, str(exc))
+
+
+def draw_drift(draws: list[DistributionDraw], requested: int) -> dict[str, object]:
+    valid = [draw for draw in draws if draw.error is None and draw.probabilities]
+    pmax_differences = []
+    probability_differences = []
+    flips = 0
+    for left, right in itertools.combinations(valid, 2):
+        assert left.normalized_pmax is not None and right.normalized_pmax is not None
+        pmax_differences.append(abs(left.normalized_pmax - right.normalized_pmax))
+        probability_differences.extend(abs(left.probabilities[key] - right.probabilities[key])
+                                       for key in left.probabilities)
+        flips += left.option_id != right.option_id
+    pmax_values = [draw.normalized_pmax for draw in valid if draw.normalized_pmax is not None]
+    return {
+        "requested_draws": requested, "valid_draws": len(valid), "failed_draws": len(draws) - len(valid),
+        "comparison_pairs": len(pmax_differences), "probability_comparisons": len(probability_differences),
+        "normalized_pmax_mean_absolute_difference": mean(pmax_differences),
+        "normalized_pmax_max_absolute_difference": max(pmax_differences) if pmax_differences else None,
+        "per_option_probability_mean_absolute_difference": mean(probability_differences),
+        "per_option_probability_max_absolute_difference": max(probability_differences) if probability_differences else None,
+        "argmax_flip_pairs": flips, "argmax_flip_rate": flips / len(pmax_differences) if pmax_differences else None,
+        "normalized_pmax_floor_crossings": {
+            str(floor): min(pmax_values) < floor <= max(pmax_values) if len(pmax_values) > 1 else None
+            for floor in (0.5, 0.6, 0.7, 0.8, 0.9)
+        },
+    }
+
+
+def summarize_drift(rows: list[Outcome]) -> dict[str, object]:
+    metrics = [row.drift for row in rows if cast(int, row.drift["requested_draws"]) > 1]
+    pair_count = sum(cast(int, value["comparison_pairs"]) for value in metrics)
+    probability_count = sum(cast(int, value["probability_comparisons"]) for value in metrics)
+
+    def weighted_mean(name: str, count_name: str, count: int) -> float | None:
+        return sum(cast(float, value[name]) * cast(int, value[count_name])
+                   for value in metrics if value[name] is not None) / count if count else None
+
+    def maximum(name: str) -> float | None:
+        values = [cast(float, value[name]) for value in metrics if value[name] is not None]
+        return max(values) if values else None
+
+    return {
+        "cases": len(metrics), "comparable_cases": sum(cast(int, value["comparison_pairs"]) > 0 for value in metrics),
+        "comparison_pairs": pair_count, "probability_comparisons": probability_count,
+        "failed_draws": sum(cast(int, value["failed_draws"]) for value in metrics),
+        "normalized_pmax_mean_absolute_difference": weighted_mean("normalized_pmax_mean_absolute_difference", "comparison_pairs", pair_count),
+        "normalized_pmax_max_absolute_difference": maximum("normalized_pmax_max_absolute_difference"),
+        "per_option_probability_mean_absolute_difference": weighted_mean("per_option_probability_mean_absolute_difference", "probability_comparisons", probability_count),
+        "per_option_probability_max_absolute_difference": maximum("per_option_probability_max_absolute_difference"),
+        "argmax_flip_rate": sum(cast(int, value["argmax_flip_pairs"]) for value in metrics) / pair_count if pair_count else None,
+        "normalized_pmax_floor_crossing_cases": {
+            str(floor): sum(object_value(value["normalized_pmax_floor_crossings"])[str(floor)] is True for value in metrics)
+            for floor in (0.5, 0.6, 0.7, 0.8, 0.9)
+        },
+    }
+
+
 def run_variant(item: Item, variant: Variant, mode: str, client: ChatClient, settings: Settings) -> Outcome:
     started = time.monotonic()
     calls: list[ApiResult] = []
-    scores: dict[str, float] = {}
-    first: dict[str, float] = {}
-    probabilities: dict[str, float] = {}
+    primary_calls: list[ApiResult] = []
+    draws: list[DistributionDraw] = []
+    primary = distribution_draw({}, {}, {}, None, None)
     option_id = None
     leaked = entropy = margin = normalized = None
     error = None
     full_coverage = False
     provider_response: dict[str, object] | None = None
+    active_draw = 0
     case_id = f"{item.id}/{variant.id}/{mode}"
 
     def post(path: str, body: dict[str, object]) -> dict[str, object]:
-        result = client.post(path, body, origin=True, case_id=case_id)
+        suffix = f"/draw-{active_draw}" if active_draw else "/preparation"
+        result = client.post(path, body, origin=True, case_id=case_id + suffix)
         calls.append(result)
         if not result.ok or result.response is None:
             raise ValueError(result.error or "HTTP request failed")
@@ -443,58 +584,68 @@ def run_variant(item: Item, variant: Variant, mode: str, client: ChatClient, set
             if key is None:
                 raise ValueError("final content must be exactly one key, without explanation or alternatives")
             option_id = variant.key_to_option[key]
-        elif mode == "native":
-            response = post("v1/systemone", native_variant_request(item, variant, settings.model))
-            probabilities = native_probabilities(item, variant, response, settings.model)
-            provider_response = response
         else:
-            rendered = post("apply-template", {"model": settings.model, "messages": variant.messages,
-                                              "chat_template_kwargs": settings.direct_template_kwargs})
-            prompt = text_value(rendered.get("prompt")) + settings.direct_prefill
-            first_by_token: dict[str, float] = {}
-            for key in variant.key_to_option:
-                tokenized = post("tokenize", {"content": key, "add_special": False, "parse_special": False})
-                tokens = array_value(tokenized.get("tokens"))
-                if not tokens or any(type(token) is not int for token in tokens):
-                    raise ValueError("invalid key tokenizer response")
-                response = post("completion", {
-                    "model": settings.model, "prompt": prompt, "n_predict": len(tokens),
-                    "temperature": 0, "n_probs": max(20, len(variant.key_to_option)),
-                    "grammar": "root ::= " + json.dumps(key), "cache_prompt": True,
-                    "post_sampling_probs": False,
+            prompt = ""
+            token_ids: dict[str, tuple[int, ...]] = {}
+            if mode == "direct":
+                rendered = post("apply-template", {"model": settings.model, "messages": variant.messages,
+                                                  "chat_template_kwargs": settings.direct_template_kwargs})
+                prompt = text_value(rendered.get("prompt")) + settings.direct_prefill
+                for key in variant.key_to_option:
+                    tokenized = post("tokenize", {"content": key, "add_special": False, "parse_special": False})
+                    tokens = array_value(tokenized.get("tokens"))
+                    if not tokens or any(type(token) is not int for token in tokens):
+                        raise ValueError("invalid key tokenizer response")
+                    token_ids[key] = tuple(cast(list[int], tokens))
+
+            def complete_keys(grammar: str, token_count: int) -> dict[str, object]:
+                return post("completion", {
+                    "model": settings.model, "prompt": prompt, "n_predict": token_count,
+                    "temperature": 0, "n_probs": max(50, len(variant.key_to_option) + 20),
+                    "grammar": grammar, "cache_prompt": True, "post_sampling_probs": False,
                 })
-                score, first_token, first_score = forced_score(response, key, len(tokens))
-                scores[key] = score
-                first[key] = first_score
-                if first_token in first_by_token and not math.isclose(first_by_token[first_token], first_score, abs_tol=1e-5):
-                    raise ValueError("inconsistent first-token scores across forced keys")
-                first_by_token[first_token] = first_score
-            raw_mass = sum(math.exp(value) for value in first_by_token.values())
-            if raw_mass > 1 + 1e-5:
-                raise ValueError("pre-constraint first-token key mass exceeds one")
-            leaked = max(0.0, 1 - raw_mass)
-            by_key = normalize(scores)
-            probabilities = {variant.key_to_option[key]: value for key, value in by_key.items()}
-        if mode != "thinking":
-            option_id = max(probabilities, key=lambda option: probabilities[option])
-            ordered = sorted(probabilities.values(), reverse=True)
-            entropy = -sum(p * math.log(p) for p in ordered if p)
-            margin = ordered[0] - (ordered[1] if len(ordered) > 1 else 0)
-            normalized = (len(ordered) * ordered[0] - 1) / (len(ordered) - 1) if len(ordered) > 1 else 1.0
-            full_coverage = True
+
+            for active_draw in range(1, settings.repeat_draws + 1):
+                call_start = len(calls)
+                response = None
+                try:
+                    if mode == "native":
+                        response = post("v1/systemone", native_variant_request(item, variant, settings.model))
+                        draw = distribution_draw(native_probabilities(item, variant, response, settings.model),
+                                                 {}, {}, None, None)
+                    else:
+                        draw = score_direct_draw(variant.key_to_option, token_ids, complete_keys)
+                except (ValueError, TypeError, KeyError, OverflowError) as exc:
+                    draw = distribution_draw({}, {}, {}, None, None, str(exc))
+                draws.append(draw)
+                if active_draw == 1:
+                    primary = draw
+                    primary_calls = calls[call_start:]
+                    provider_response = response if draw.error is None else None
+            error = primary.error
+            if primary.probabilities:
+                option_id = primary.option_id
+                ordered = sorted(primary.probabilities.values(), reverse=True)
+                entropy = -sum(p * math.log(p) for p in ordered if p)
+                margin = ordered[0] - (ordered[1] if len(ordered) > 1 else 0)
+                normalized = primary.normalized_pmax
+                leaked = max(0.0, 1 - primary.raw_key_mass) if primary.raw_key_mass is not None else None
+                full_coverage = True
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         error = str(exc)
     state_bytes = state_byte_size(item.state)
     return Outcome(item.id, item.family, variant.id, mode, variant.key_to_option,
-                   option_id, is_correct(item, option_id), full_coverage, probabilities,
-                   scores, first, leaked, entropy, margin, normalized,
-                   native_answer(item, probabilities, normalized) if full_coverage and normalized is not None else None,
+                   option_id, is_correct(item, option_id), full_coverage, primary.probabilities,
+                   primary.sequence_logprobs, primary.first_token_logprobs, leaked, entropy, margin, normalized,
+                   native_answer(item, primary.probabilities, normalized) if full_coverage and normalized is not None else None,
                    provider_response if mode == "native" else (
-                       native_response(item, settings.model, probabilities, normalized, calls)
+                       native_response(item, settings.model, primary.probabilities, normalized, primary_calls)
                        if full_coverage and normalized is not None else None),
-                   scalar_metrics(item, probabilities),
+                   scalar_metrics(item, primary.probabilities),
                    time.monotonic() - started, error, tuple(calls),
-                   state_bytes, state_bytes / 4, state_bytes / 4 > settings.state_token_warning)
+                   state_bytes, state_bytes / 4, state_bytes / 4 > settings.state_token_warning,
+                   primary.scoring_source, primary.scoring_source == "mixed", primary.raw_key_mass,
+                   tuple(draws), draw_drift(draws, settings.repeat_draws if mode != "thinking" else 0))
 
 
 def mean(values: list[float]) -> float | None:
@@ -527,6 +678,7 @@ def summarize(rows: list[Outcome], selected: tuple[Item, ...], variants: int, mo
         confidences = [(max(row.probabilities.values()), row.correct) for row in distributions]
         latencies = sorted(row.elapsed_seconds for row in group)
         leaks = [row.leaked_mass for row in distributions if row.leaked_mass is not None]
+        raw_masses = [row.raw_key_mass for row in group if row.raw_key_mass is not None]
         confusion = {}
         for special in ("new", "unknown", "defer"):
             counts = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
@@ -534,7 +686,7 @@ def summarize(rows: list[Outcome], selected: tuple[Item, ...], variants: int, mo
                 markers = item.special.get(special, frozenset())
                 if not markers:
                     continue
-                expected = item.defer_acceptable if special == "defer" else bool(markers & item.gold)
+                expected = bool(markers & item.gold) or (special == "defer" and item.defer_acceptable)
                 item_rows = {row.variant_id: row for row in group if row.item_id == item.id}
                 for index in range(variants):
                     row = item_rows.get(f"order-{index}")
@@ -569,6 +721,11 @@ def summarize(rows: list[Outcome], selected: tuple[Item, ...], variants: int, mo
             "argmax_confidence_brier": mean([(p - int(correct)) ** 2 for p, correct in confidences]),
             "argmax_confidence_log_loss": mean([-math.log(max(1e-15, p if correct else 1 - p)) for p, correct in confidences]),
             "mean_leaked_mass": mean(leaks), "max_leaked_mass": max(leaks) if leaks else None,
+            "scoring_source_counts": {source: sum(row.scoring_source == source for row in group) for source in ("single", "mixed")},
+            "mixed_sources_count": sum(row.mixed_sources for row in group),
+            "raw_key_mass_n": len(raw_masses), "mean_raw_key_mass": mean(raw_masses),
+            "max_raw_key_mass": max(raw_masses) if raw_masses else None,
+            "drift": summarize_drift(group),
             "order_stability": {"pairs": pairs, "argmax_agreement": agreements / pairs if pairs else None,
                                 "js_distance_mean": mean(distances), "distribution_pairs": len(distances)},
             "latency_p50_seconds": statistics.median(latencies) if latencies else None,
@@ -597,6 +754,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--variants", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--repeat-draws", type=int, default=1, help="direct/native scoring draws; draw 1 alone determines primary scores")
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--measurement-timeout", type=float, default=600)
     parser.add_argument("--state-token-warning", type=float, default=16384,
@@ -612,8 +770,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        if args.concurrency <= 0 or args.max_tokens <= 0 or not math.isfinite(args.measurement_timeout) or args.measurement_timeout <= 0:
-            raise ValueError("positive finite concurrency and inference budgets required")
+        if args.concurrency <= 0 or args.max_tokens <= 0 or args.repeat_draws <= 0 or not math.isfinite(args.measurement_timeout) or args.measurement_timeout <= 0:
+            raise ValueError("positive finite concurrency, draw count and inference budgets required")
         if not math.isfinite(args.state_token_warning) or args.state_token_warning <= 0:
             raise ValueError("state token warning threshold must be positive and finite")
         items, hashes = load_fixtures(args.fixtures, args.model)
@@ -624,7 +782,7 @@ def main() -> int:
         profile = native_profile(args.thinking_extra_body)
         provenance = object_value(json.loads(args.manifest.read_bytes(), object_pairs_hook=unique_object)) if args.manifest else None
         json.dumps([template_kwargs, provenance], allow_nan=False)
-        settings = Settings(args.model, template_kwargs, args.direct_prefill, profile, args.max_tokens, args.state_token_warning)
+        settings = Settings(args.model, template_kwargs, args.direct_prefill, profile, args.max_tokens, args.state_token_warning, args.repeat_draws)
         prepared = [(item, variant) for item in items for variant in make_variants(item, template, args.variants, args.seed, args.system_rule)]
     except (ValueError, TypeError, OSError, KeyError, RecursionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
