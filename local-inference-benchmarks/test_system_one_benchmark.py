@@ -228,7 +228,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(bench.auroc([dataclasses.replace(wrong, margin=rows[0].margin), rows[0]]), 0.5)
 
     def test_defer_rules_and_special_confusion(self) -> None:
-        item = dataclasses.replace(fixture(), special={"defer": "first", "unknown": "second"})
+        item = dataclasses.replace(fixture(), special={"defer": frozenset({"first"}), "unknown": frozenset({"second"})})
         self.assertFalse(bench.is_correct(item, "first"))  # Even if defer is listed in gold.
         self.assertTrue(bench.is_correct(dataclasses.replace(item, defer_acceptable=True), "first"))
         self.assertFalse(bench.is_correct(item, None))
@@ -239,6 +239,52 @@ class AdapterTests(unittest.TestCase):
         confusion = bench.object_value(summary["special_confusion"])
         self.assertEqual(bench.object_value(confusion["defer"])["fp"], 2)
         self.assertEqual(summary["accuracy"], 0)
+
+    def test_list_markers_load_multiple_ids_empty_lists_and_legacy_values(self) -> None:
+        row = json.loads(DATASET.read_text().splitlines()[1])
+        row["special"] = {"new": ["red", "new-label"], "unknown": ["blue"], "defer": []}
+        item = bench.parse_item(row)
+        self.assertEqual(item.special, {"new": frozenset({"red", "new-label"}), "unknown": frozenset({"blue"})})
+        for legacy in ("new-label", ["new-label"]):
+            row["special"] = {"new": legacy, "unknown": None, "defer": []}
+            self.assertEqual(bench.parse_item(row).special, {"new": frozenset({"new-label"})})
+        for invalid in (["missing-option"], [17], [["red"]]):
+            row["special"] = {"new": invalid}
+            with self.subTest(invalid=invalid), self.assertRaises((ValueError, TypeError)):
+                bench.parse_item(row)
+
+    def test_set_marker_defer_rules_apply_to_every_marked_option(self) -> None:
+        item = dataclasses.replace(fixture(), special={"defer": frozenset({"first", "second"})})
+        self.assertFalse(bench.is_correct(item, "first"))
+        self.assertFalse(bench.is_correct(item, "second"))
+        allowed = dataclasses.replace(item, gold=frozenset(), defer_acceptable=True)
+        self.assertTrue(bench.is_correct(allowed, "first"))
+        self.assertTrue(bench.is_correct(allowed, "second"))
+        row = json.loads(DATASET.read_text().splitlines()[1])
+        row["special"] = {"defer": ["red", "new-label"]}
+        row["gold"] = {"option_ids": ["new-label"], "defer_acceptable": False}
+        with self.assertRaisesRegex(ValueError, "effective correct"):
+            bench.parse_item(row)
+        row["gold"] = {"option_ids": [], "defer_acceptable": True}
+        parsed = bench.parse_item(row)
+        self.assertTrue(bench.is_correct(parsed, "red"))
+        self.assertTrue(bench.is_correct(parsed, "new-label"))
+        row["special"] = {"defer": []}
+        with self.assertRaisesRegex(ValueError, "effective correct"):
+            bench.parse_item(row)
+
+    def test_set_marker_confusion_uses_gold_intersection_and_prediction_membership(self) -> None:
+        item = dataclasses.replace(fixture(), special={"new": frozenset({"first", "second"}),
+                                                     "unknown": frozenset({"second"})})
+        model = FakeModel()
+        with server(model.reply) as url:
+            rows = [bench.run_variant(item, variant, "direct", ChatClient(url, "", 2), self.settings())
+                    for variant in self.variants(item)]
+        summary = bench.object_value(bench.summarize(rows, (item,), 2, "direct", 1)["all"])
+        confusion = bench.object_value(summary["special_confusion"])
+        self.assertEqual(bench.object_value(confusion["new"]), {"tp": 2, "fp": 0, "fn": 0, "tn": 0})
+        self.assertEqual(bench.object_value(confusion["unknown"]), {"tp": 0, "fp": 0, "fn": 0, "tn": 2})
+        self.assertEqual(bench.object_value(confusion["defer"]), {"tp": 0, "fp": 0, "fn": 0, "tn": 0})
 
     def test_thinking_exact_final_parser_native_profile_and_truncation(self) -> None:
         model = FakeModel()
@@ -318,7 +364,12 @@ class AdapterTests(unittest.TestCase):
             output = Path(directory) / "smoke.json"
             provenance = Path(directory) / "provenance.json"
             provenance.write_text('{"runtime":"fake local HTTP server"}')
-            argv = ["system_one_benchmark.py", "--fixtures", str(DATASET), "--base-url", url,
+            fixtures = Path(directory) / "list-markers.jsonl"
+            fixture_rows = [json.loads(line) for line in DATASET.read_text().splitlines()]
+            for row in fixture_rows:
+                row["special"] = {key: [value] if value is not None else [] for key, value in row["special"].items()}
+            fixtures.write_text("".join(json.dumps(row) + "\n" for row in fixture_rows))
+            argv = ["system_one_benchmark.py", "--fixtures", str(fixtures), "--base-url", url,
                     "--model", "pin", "--mode", "both", "--concurrency", "2", "--output", str(output),
                     "--artifacts-dir", str(Path(directory) / "raw"), "--manifest", str(provenance),
                     "--direct-template-kwargs", '{"enable_thinking":false}', "--system-rule", "RULE"]
@@ -338,6 +389,7 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(len(manifest["dataset_sha256"]), 1)
             self.assertEqual(len(manifest["native_requests"]), 4)
             self.assertEqual(manifest["provenance"]["runtime"], "fake local HTTP server")
+            self.assertEqual(manifest["fixtures_for_scoring_only"][1]["special"], {"new": ["new-label"]})
             self.assertTrue(output.with_suffix(".run-owner.json").exists())
             self.assertEqual(len(list((Path(directory) / "raw").glob("*.json"))), request_count)
             for row in report["cases"]:

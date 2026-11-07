@@ -84,7 +84,7 @@ class Item:
     options: tuple[Option, ...]
     gold: frozenset[str]
     defer_acceptable: bool
-    special: dict[str, str]
+    special: dict[str, frozenset[str]]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -154,12 +154,21 @@ def parse_item(value: object) -> Item:
     gold_row = object_value(row.get("gold"))
     gold = frozenset(text_value(key) for key in array_value(gold_row.get("option_ids")))
     defer = gold_row.get("defer_acceptable")
-    special = {key: text_value(value) for key, value in object_value(row.get("special", {})).items() if value is not None}
-    if set(special) - {"new", "unknown", "defer"} or not set(special.values()) <= option_ids:
+    special: dict[str, frozenset[str]] = {}
+    for key, marker_value in object_value(row.get("special", {})).items():
+        if key not in {"new", "unknown", "defer"}:
+            raise ValueError("invalid special option marker")
+        if marker_value is None:
+            continue
+        values = [marker_value] if isinstance(marker_value, str) else array_value(marker_value)
+        markers = frozenset(text_value(option_id) for option_id in values)
+        if markers:
+            special[key] = markers
+    if any(not markers <= option_ids for markers in special.values()):
         raise ValueError("invalid special option markers")
     if not gold <= option_ids or type(defer) is not bool or (not gold and not defer):
         raise ValueError("gold must name available options or permit defer")
-    if not (gold - {special.get("defer")}) and not (defer and "defer" in special):
+    if not (gold - special.get("defer", frozenset())) and not (defer and special.get("defer")):
         raise ValueError("gold must contain an effective correct option")
     return Item(text_value(row.get("id")), text_value(row.get("family")),
                 text_value(row.get("difficulty")), state, question, options, gold, defer, special)
@@ -302,7 +311,7 @@ def make_variants(item: Item, template: str, count: int, seed: int, system_rule:
 def is_correct(item: Item, option_id: str | None) -> bool:
     if option_id is None:
         return False
-    if option_id == item.special.get("defer"):
+    if option_id in item.special.get("defer", frozenset()):
         return item.defer_acceptable
     return option_id in item.gold
 
@@ -456,14 +465,14 @@ def summarize(rows: list[Outcome], selected: tuple[Item, ...], variants: int, mo
         for special in ("new", "unknown", "defer"):
             counts = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
             for item in items:
-                marker = item.special.get(special)
-                if marker is None:
+                markers = item.special.get(special, frozenset())
+                if not markers:
                     continue
-                expected = item.defer_acceptable if special == "defer" else marker in item.gold
+                expected = item.defer_acceptable if special == "defer" else bool(markers & item.gold)
                 item_rows = {row.variant_id: row for row in group if row.item_id == item.id}
                 for index in range(variants):
                     row = item_rows.get(f"order-{index}")
-                    predicted = row is not None and row.option_id == marker
+                    predicted = row is not None and row.option_id in markers
                     counts[("t" if predicted == expected else "f") + ("p" if predicted else "n")] += 1
             confusion[special] = counts
         agreements = 0
@@ -561,7 +570,11 @@ def main() -> int:
                         artifacts_dir=args.artifacts_dir, label=args.label, nonce=args.output.stem)
     manifest_path = args.output.with_suffix(".manifest.json")
     write_json(manifest_path, {
-        "suite_version": VERSION, "dataset_sha256": hashes, "fixtures_for_scoring_only": [dataclasses.asdict(item) | {"gold": sorted(item.gold)} for item in items],
+        "suite_version": VERSION, "dataset_sha256": hashes, "fixtures_for_scoring_only": [
+            dataclasses.asdict(item) | {"gold": sorted(item.gold),
+                                      "special": {key: sorted(markers) for key, markers in item.special.items()}}
+            for item in items
+        ],
         "prompt_template": template, "prompt_template_sha256": hashlib.sha256(template.encode()).hexdigest(),
         "system_rule": args.system_rule, "seed": args.seed, "variants": args.variants,
         "settings": dataclasses.asdict(settings), "prepared": [dataclasses.asdict(variant) | {"item_id": item.id} for item, variant in prepared],
