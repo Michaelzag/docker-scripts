@@ -23,7 +23,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-from agent_workload_benchmark import ChatClient, redact_persistence
+from agent_workload_benchmark import ApiResult, ChatClient, redact_persistence
 from intelligence_challenge_suite import reserve_output, write_json
 from published_knowledge_benchmark import unique_object
 
@@ -251,6 +251,29 @@ def context_settings(client: ChatClient, configured: int | None) -> dict:
     raise ValueError("per-slot context unavailable from /props; supply --context-tokens")
 
 
+def json_candidate(reply: str) -> str:
+    # Faithful port: zagdb/crates/zagdb-bridge/src/judges.rs:1528-1557.
+    # Preserve the first-opener/last-closer failure mode; parsing is the arbiter.
+    whitespace = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+    text = reply.strip(whitespace)
+    fence = text.find("```")
+    if fence >= 0:
+        after = text[fence + 3:]
+        body_start = after.find("\n") + 1
+        body = after[body_start:]
+        end = body.find("```")
+        if end >= 0:
+            return body[:end].strip(whitespace)
+    for start, character in enumerate(text):
+        if character in '[{"':
+            closer = {"[": "]", "{": "}", '"': '"'}[character]
+            end = text.rfind(closer)
+            if end > start:
+                return text[start:end + 1]
+            break
+    return text
+
+
 def run_row(row: dict, client: ChatClient, model: str, extra: dict, max_tokens: int,
             context_tokens: int) -> dict:
     if row.get("missing_variables"):
@@ -260,6 +283,10 @@ def run_row(row: dict, client: ChatClient, model: str, extra: dict, max_tokens: 
                 "shape_failure": False, "length": False, "checks": {"variables": False}, "passed": False}
     body = {"model": model, "messages": row["messages"], "temperature": 0, "seed": 0, "max_tokens": max_tokens, **extra}
     result = client.chat(body, case_id=row["id"])
+    return score_result(row, result, context_tokens)
+
+
+def score_result(row: dict, result: ApiResult, context_tokens: int) -> dict:
     record = {"id": row["id"], "family": row["family"], "status": result.status, "error": result.error, "artifact": result.artifact, "latency_seconds": result.wall_seconds, "shape_failure": False, "length": False, "checks": {}}
     record["prompt_variant"] = row.get("prompt_variant", row["family"])
     record["missing_variables"] = []
@@ -275,7 +302,7 @@ def run_row(row: dict, client: ChatClient, model: str, extra: dict, max_tokens: 
         try:
             if record["length"] or choice.get("finish_reason") != "stop" or message.get("tool_calls") or not isinstance(message.get("content"), str):
                 raise ValueError("invalid completion")
-            answer = json.loads(message["content"], object_pairs_hook=unique_object)
+            answer = json.loads(json_candidate(message["content"]), object_pairs_hook=unique_object)
             if not valid_shape(answer, row["family"]):
                 raise ValueError("invalid response shape")
         except (ValueError, RecursionError):
@@ -353,21 +380,71 @@ def summarize(rows: list[dict], wall: float) -> dict:
     return result
 
 
+def rescore_run(directory: Path, fixtures: list[dict], configured_context: int | None,
+                output: Path | None) -> Path:
+    """Replay finished attempts from retained wire bodies, never call an endpoint."""
+    original_path = directory / "report.json"
+    original = json.loads(original_path.read_text(), object_pairs_hook=unique_object)
+    context = original.get("context")
+    if not isinstance(context, dict) or type(context.get("n_ctx")) is not int or context["n_ctx"] <= 0:
+        if configured_context is None or configured_context <= 0:
+            raise ValueError("retained context unavailable; supply --context-tokens for offline rescore")
+        context = {"n_ctx": configured_context, "source": "--context-tokens (offline rescore)"}
+    by_key = {(row["id"], row["family"], row["prompt_variant"]): row for row in fixtures}
+    results = []
+    for previous in original["rows"]:
+        if previous.get("reason") == "missing_variable":
+            results.append(previous)
+            continue
+        family = previous["family"]
+        variant = previous.get("prompt_variant", "UNVERIFIED_PROPOSED_EVAL_ONLY" if family == "hub_summary" else "VERIFIED_VERBATIM")
+        row = by_key[(previous["id"], family, variant)]
+        reference = previous.get("artifact")
+        if not isinstance(reference, str):
+            raise TypeError(f"{previous['id']} has no retained artifact")
+        artifact_path = Path(reference)
+        if not artifact_path.is_absolute():
+            artifact_path = directory / artifact_path
+        if not artifact_path.is_file():
+            artifact_path = directory / "raw" / Path(reference).name
+        artifact = json.loads(artifact_path.read_text(), object_pairs_hook=unique_object)
+        response = None
+        if artifact["ok"]:
+            response = json.loads(artifact["response_body_utf8"])
+            if not isinstance(response, dict):
+                raise TypeError(f"{artifact_path}: retained response is not an object")
+        result = ApiResult(ok=artifact["ok"], wall_seconds=artifact["wall_seconds"],
+                           status=artifact["http_status"], response=response,
+                           error=artifact.get("error"), artifact=str(artifact_path))
+        results.append(score_result(row, result, context["n_ctx"]))
+    wall = next(iter(original["summary"].values()))["wall_seconds"]
+    report = {**original, "version": "zagdb-generative-v4", "context": context,
+              "rescored_from": str(original_path), "rescore_http_calls": 0,
+              "json_candidate_source": "zagdb/crates/zagdb-bridge/src/judges.rs:1528-1557",
+              "summary": summarize(results, wall), "rows": results}
+    destination = output or directory / "report.rescored.json"
+    reserve_output(destination)
+    write_json(destination, report)
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--rescore", type=Path, metavar="DIR",
+                        help="Offline: read DIR/report.json and retained raw artifacts; keep the old report")
     parser.add_argument("--fixtures", type=Path, required=True)
     parser.add_argument("--templates", type=Path, required=True)
     parser.add_argument("--candidate-hub-template", type=Path,
                         help="Default: fixtures/real_hub_prompt/hub_summary@1.tera")
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--base-url")
+    parser.add_argument("--model")
     parser.add_argument("--extra-body", default="{}")
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--context-tokens", type=int, help="Per-slot context fallback if /props is unavailable")
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--measurement-timeout", type=float, default=600)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--artifacts-dir", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--artifacts-dir", type=Path)
     parser.add_argument("--label", default="unspecified")
     parser.add_argument("--api-key-env", default="LOCAL_LLM_API_KEY")
     args = parser.parse_args()
@@ -375,6 +452,12 @@ def main() -> int:
         rows = load_rows(args.fixtures, args.templates)
         candidate_path = args.candidate_hub_template or args.fixtures / "real_hub_prompt" / "hub_summary@1.tera"
         rows.extend(candidate_rows(args.fixtures, candidate_path))
+        if args.rescore is not None:
+            destination = rescore_run(args.rescore, rows, args.context_tokens, args.output)
+            print(f"rescored report: {destination}")
+            return 0
+        if not args.base_url or not args.model or args.output is None or args.artifacts_dir is None:
+            raise ValueError("generation requires --base-url, --model, --output and --artifacts-dir")
         extra = json.loads(args.extra_body, object_pairs_hook=unique_object)
         if not isinstance(extra, dict) or set(extra) - {"chat_template_kwargs"} or ("chat_template_kwargs" in extra and not isinstance(extra["chat_template_kwargs"], dict)):
             raise ValueError("extra-body permits only chat_template_kwargs")
@@ -392,7 +475,7 @@ def main() -> int:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
             results = list(pool.map(lambda row: run_row(row, client, args.model, extra, args.max_tokens, context["n_ctx"]), rows))
         wall = time.monotonic() - started
-        report = {"version": "zagdb-generative-v3", "label": args.label, "model": args.model,
+        report = {"version": "zagdb-generative-v4", "label": args.label, "model": args.model,
                   "context": context,
                   "hub_summary_prompt_statuses": ["UNVERIFIED_PROPOSED_EVAL_ONLY", CANDIDATE_STATUS],
                   "candidate_template_sha256": CANDIDATE_SHA256,

@@ -825,3 +825,29 @@ any HTTP call. The proposal and candidate use the same row validator but have
 separate labelled report groups. Thus a complete run has 43 attempts (15 naming,
 14 proposed hub, 14 candidate hub), less any missing-variable failures.
 
+### Native JSON extraction and offline rescoring
+
+Output extraction follows ZagDB's `json_candidate`
+(`crates/zagdb-bridge/src/judges.rs:1528-1557`): take the first fenced body if a
+complete fence exists, otherwise slice from the first `[`, `{`, or `"` to its
+last corresponding closer. JSON parsing and the fixture's exact shape rules
+then decide validity; extra keys still fail. This intentionally preserves the
+native failure when a prose quote precedes an unfenced JSON object. It does not
+search for a later valid object or repair a malformed candidate.
+
+```sh
+python3 generative_benchmark.py --rescore /path/to/finished-run \
+  --fixtures /path/to/generative --templates /path/to/generative/templates.json
+```
+
+Rescoring reads `finished-run/report.json`, its retained raw artifacts, and the
+same immutable fixture rules. It requires no API key, model, or endpoint and
+makes zero HTTP calls. It writes `report.rescored.json` beside the original,
+preserving both the old report and artifacts. Existing output is never
+overwritten; use `--output /path/to/finished-run/report.rescored-again.json` for
+another scoring revision. Relative artifact paths resolve from the run directory;
+relocated captures can use `finished-run/raw/<original-artifact-filename>`.
+The retained per-slot context is reused; older reports without it require
+`--context-tokens N`. Latency and wall-time measurements remain the original
+inference measurements, not offline parsing time.
+

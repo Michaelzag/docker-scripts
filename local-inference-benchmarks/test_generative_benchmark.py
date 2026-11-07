@@ -16,8 +16,10 @@ from generative_benchmark import (
     candidate_variables,
     context_settings,
     digest,
+    json_candidate,
     main,
     render_candidate,
+    rescore_run,
     run_row,
     summarize,
 )
@@ -109,6 +111,24 @@ class GenerativeTests(unittest.TestCase):
         result = self.run_case(naming())
         self.assertFalse(result['passed'])
         self.assertTrue(result['shape_failure'])
+
+    def test_native_json_candidate_fences_plain_and_real_failure_modes(self):
+        good = json.dumps({'name': 'Gift Card', 'definition': 'A card with a balance.'})
+        extra = json.dumps({'name': 'Gift Card', 'definition': 'A balance.', 'extra': 'no'})
+        for content, passed in (
+            ('```json\n' + good + '\n```', True),
+            (good, True),
+            ('Here you go: ' + good + ' — done', True),
+            ('Here is "the answer": ' + good, False),
+            ('```json\n' + extra + '\n```', False),
+            ('```\nnot JSON\n```\n```json\n' + good + '\n```', False),
+        ):
+            with self.subTest(content=content):
+                Handler.requests = []
+                Handler.response = {'choices': [{'finish_reason': 'stop', 'message': {'content': content}}]}
+                result = self.run_case(naming())
+                self.assertEqual(result['passed'], passed)
+                self.assertEqual(result['shape_failure'], not passed)
 
     def test_length_is_terminal(self):
         Handler.response = reply({'name': 'Gift Card', 'definition': 'A balance.'}, 'length')
@@ -297,6 +317,65 @@ class GenerativeTests(unittest.TestCase):
             self.assertEqual(main(), 2)
         self.assertEqual(Handler.requests, [])
         self.assertFalse(output.exists())
+
+    def test_cli_rescores_raw_artifact_without_http_and_preserves_old_report(self):
+        root = Path(self.tmp.name)
+        content = '```json\n' + json.dumps({'name': 'Gift Card', 'definition': 'A card with a balance.'}) + '\n```'
+        Handler.response = {'choices': [{'finish_reason': 'stop', 'message': {'content': content}}]}
+        row = {**naming(), 'prompt_variant': 'VERIFIED_VERBATIM'}
+        previous = self.run_case(row)
+        # Simulate the former strict parser's failure, not a new model attempt.
+        previous.update(passed=False, shape_failure=True, checks={'shape': False})
+        original = {'version': 'zagdb-generative-v3', 'model': 'test-model',
+                    'context': {'n_ctx': 131072, 'source': 'props.n_ctx'},
+                    'rows': [previous], 'summary': summarize([previous], 2.5)}
+        original_path = root / 'report.json'
+        original_path.write_text(json.dumps(original))
+        original_bytes = original_path.read_bytes()
+        artifact_path = Path(previous['artifact'])
+        retained = json.loads(artifact_path.read_text())
+        retained['response'] = reply({'name': 'Wrong', 'definition': 'Wrong'})
+        artifact_path.write_text(json.dumps(retained))
+        artifact_bytes = artifact_path.read_bytes()
+        argv = ['generative_benchmark.py', '--rescore', str(root), '--fixtures', str(root),
+                '--templates', str(root / 'templates.json')]
+        with patch('sys.argv', argv), patch('generative_benchmark.load_rows', return_value=[row]), \
+                patch('generative_benchmark.candidate_rows', return_value=[]), \
+                patch('urllib.request.urlopen', side_effect=AssertionError('HTTP forbidden')) as network, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(), 0)
+        network.assert_not_called()
+        rescored = json.loads((root / 'report.rescored.json').read_text())
+        self.assertTrue(rescored['rows'][0]['passed'])
+        self.assertEqual(rescored['rescore_http_calls'], 0)
+        self.assertEqual(rescored['context'], original['context'])
+        self.assertEqual(next(iter(rescored['summary'].values()))['wall_seconds'], 2.5)
+        self.assertEqual(original_path.read_bytes(), original_bytes)
+        self.assertEqual(artifact_path.read_bytes(), artifact_bytes)
+        with self.assertRaises(FileExistsError):
+            rescore_run(root, [row], None, None)
+        # Old reports without context require an explicit offline value.
+        original.pop('context')
+        original_path.write_text(json.dumps(original))
+        with self.assertRaisesRegex(ValueError, 'supply --context-tokens'):
+            rescore_run(root, [row], None, root / 'older.rescored.json')
+        destination = rescore_run(root, [row], 262144, root / 'older.rescored.json')
+        self.assertEqual(json.loads(destination.read_text())['context']['n_ctx'], 262144)
+
+
+class JsonCandidateTests(unittest.TestCase):
+    def test_source_examples_and_first_opener_behavior(self):
+        for reply_text, expected in (
+            ('```json\n[1,2]\n```', '[1,2]'),
+            ('Here you go: [1,2] — done', '[1,2]'),
+            ('"a summary"', '"a summary"'),
+            ('Sure! {"Add":{"fact":"x"}}', '{"Add":{"fact":"x"}}'),
+            ('prefix "quote" before {"name":"x"}', '"quote" before {"name":"x"'),
+            ('```[1,2]```', '[1,2]'),
+            ('```json\n[1,2]', '[1,2]'),
+        ):
+            with self.subTest(reply_text=reply_text):
+                self.assertEqual(json_candidate(reply_text), expected)
 
 
 class CandidateRenderTests(unittest.TestCase):
