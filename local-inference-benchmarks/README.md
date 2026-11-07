@@ -550,10 +550,11 @@ NEW/unknown gold membership uses set intersection, and prediction uses membershi
 Noul requires the ids `true` and `false`. Score option ids remain fixture identities;
 the canonical benchmark legend uses their **original zero-based order**. A native
 provider response retains the requested variant's legend order separately.
-Gold and rationale never enter the model prompt. Defer is correct **only** when
-`defer_acceptable` and the selected id is in the defer set, even if a disallowed
-defer id is among gold ids. Defer confusion treats `defer_acceptable` as its
-expected label; NEW/unknown confusion uses intersection with the gold set.
+Gold and rationale never enter the model prompt. An explicitly gold option is
+always correct, including when it belongs to the defer set. `defer_acceptable`
+adds credit for any defer-mapped option even when it is not explicitly gold;
+it never vetoes a gold answer. Defer confusion's expected label is gold/defer
+intersection **or** `defer_acceptable`; NEW/unknown use gold-set intersection.
 
 The adapter converts question text to native `instructions`; choice and noul
 criteria are ordered id-to-text maps, score criteria are ordered descriptions.
@@ -752,4 +753,21 @@ statistics, including errors, latency, and terminal length/shape failures.
 The shared client retains sanitized wire evidence in the artifacts directory.
 Run the offline fake-server tests with `python3 -m unittest -v
 test_generative_benchmark`.
+
+The runner also evaluates all 14 hub rows using **candidate real prompt
+(unmerged)** from the P6 integration work. Its default template path is
+`<fixtures>/real_hub_prompt/hub_summary@1.tera`; override the location with
+`--candidate-hub-template`. Its exact byte SHA256 is pinned to
+`8ca5e76dd7fb1960cedc0c969e5f8955ec334f05bb79402d4679be2d386ba372`.
+The template uses only bare Tera variable interpolation, without filters,
+conditionals, loops, or autoescaping. Unsupported constructs are rejected.
+
+Candidate variables are mapped from the supplied community id and level, the
+complete member list serialized as canonical JSON, and retained member
+assessments collected into a JSON object keyed by revision id. Inactive-unknown
+members supply no assessment body. No absent values are invented: incomplete
+rows fail with `reason: missing_variable` and a `missing_variables` list before
+any HTTP call. The proposal and candidate use the same row validator but have
+separate labelled report groups. Thus a complete run has 43 attempts (15 naming,
+14 proposed hub, 14 candidate hub), less any missing-variable failures.
 
