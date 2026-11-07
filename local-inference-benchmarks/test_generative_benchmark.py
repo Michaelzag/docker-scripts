@@ -116,6 +116,48 @@ class GenerativeTests(unittest.TestCase):
         self.assertTrue(result['passed'])
         self.assertEqual((result['status'], result['error_type'], result['error_message']), (400, 'context_length_exceeded', 'too large'))
         self.assertTrue(Path(result['artifact']).exists())
+        self.assertTrue(result['diagnostics']['zagdb_detector_compatible'])
+
+    def test_llama_cpp_context_refusal_is_pass_with_incompatible_detector(self):
+        Handler.status = 400
+        Handler.response = {'error': {
+            'code': 400, 'type': 'exceed_context_size_error',
+            'message': 'request (237064 tokens) exceeds the available context size (131072 tokens)...',
+            'n_prompt_tokens': 237064, 'n_ctx': 131072,
+        }}
+        rows = []
+        for variant in ('UNVERIFIED_PROPOSED_EVAL_ONLY', CANDIDATE_STATUS):
+            Handler.requests = []
+            row = summary()
+            row.update(id='hs-13', prompt_variant=variant)
+            result = self.run_case(row)
+            self.assertTrue(result['checks']['typed_oversize_refusal'])
+            self.assertTrue(result['passed'])
+            self.assertFalse(result['diagnostics']['zagdb_detector_compatible'])
+            artifact = json.loads(Path(result['artifact']).read_text())
+            self.assertEqual(json.loads(artifact['response_body_utf8']), Handler.response)
+            rows.append(result)
+        groups = summarize(rows, 1)
+        self.assertEqual(len(groups), 2)
+        for group in groups.values():
+            self.assertEqual(group['passed'], 1)
+            self.assertEqual(group['zagdb_detector_compatible_count'], 0)
+            self.assertEqual(group['zagdb_detector_checked_count'], 1)
+
+    def test_oversize_refusal_requires_4xx_known_type_and_no_output(self):
+        row = summary()
+        row['id'] = 'hs-13'
+        for status, payload in (
+            (500, {'error': {'type': 'context_length_exceeded'}}),
+            (400, {'error': {'type': 'other_error', 'message': 'context too large'}}),
+            (400, {'error': {'type': 'exceed_context_size_error'}, **reply('generated')}),
+            (400, {'error': {'type': 'exceed_context_size_error'}, 'content': 'generated'}),
+        ):
+            with self.subTest(status=status, payload=payload):
+                Handler.status, Handler.response, Handler.requests = status, payload, []
+                result = self.run_case(row)
+                self.assertFalse(result['checks']['typed_oversize_refusal'])
+                self.assertFalse(result['passed'])
 
     def test_missing_variables_fail_without_http(self):
         row = summary()

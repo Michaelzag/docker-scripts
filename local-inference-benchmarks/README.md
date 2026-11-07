@@ -772,6 +772,12 @@ and retains request/response evidence. The hub summary prompt is an **eval-only
 proposal**, not a production prompt. Invalid shapes and length finishes fail
 without repair or retry. The intentionally oversized hs-13 must receive a typed
 context-length refusal; it is never truncated to fit.
+The refusal check accepts only HTTP 4xx with error type
+`context_length_exceeded` or llama.cpp's `exceed_context_size_error`, and no
+generated output. `diagnostics.zagdb_detector_compatible` is true only for
+`context_length_exceeded`; it does **not** gate row success. Each variant reports
+`zagdb_detector_compatible_count` and `zagdb_detector_checked_count` separately,
+so a correct server refusal is not penalized for ZagDB's detector limitation.
 
 ```sh
 python3 generative_benchmark.py \
