@@ -125,6 +125,40 @@ class CalibrationTests(unittest.TestCase):
                                 lambda body, case, value=count_result: value, retained.append)
             self.assertEqual(len(retained), 1)
 
+    def test_main_preserves_qualified_native_sampling_in_calibration_request(self):
+        import urllib.error
+
+        for temperature in (0.6, 1.0):
+            with self.subTest(temperature=temperature), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest = root / "runtime.json"
+                manifest.write_text('{"runtime":"offline-test"}')
+                profile = {"temperature": temperature, "top_p": 0.95,
+                           "chat_template_kwargs": {"enable_thinking": True}}
+                args = argparse.Namespace(
+                    mode="pooled", parallel=4, per_slot=131072, pool=393216,
+                    long_target=120000, short_target=8000, long_workers=None,
+                    measurement_timeout=600.0, extra_body_json=json.dumps(profile),
+                    manifest=manifest, output=root / "report.json", api_key_env="CAPACITY_OFFLINE_NO_KEY",
+                    base_url="http://offline.invalid/v1", model="offline", artifacts_dir=root / "raw",
+                    label="offline", seed=9,
+                )
+                error = urllib.error.HTTPError("http://offline.invalid/v1/chat/completions/input_tokens", 404,
+                                               "unsupported", Message(), io.BytesIO(b'{"error":"unsupported"}'))
+
+                with patch.object(probe, "parse_args", return_value=args), \
+                        patch("urllib.request.urlopen", side_effect=error) as transport, \
+                        patch.object(ChatClient, "chat", side_effect=AssertionError("inference forbidden")), \
+                        patch("sys.stderr", new=io.StringIO()):
+                    self.assertEqual(probe.main(), 2)
+                self.assertEqual(transport.call_count, 1)
+                body = json.loads(transport.call_args.args[0].data)
+                for key, value in profile.items():
+                    self.assertEqual(body[key], value)
+                self.assertEqual(body["max_tokens"], 8192)
+                self.assertEqual(json.loads(args.output.with_suffix(".manifest.json").read_text())["native_profile"],
+                                 profile)
+
     def test_main_unsupported_count_preserves_raw_attempt_and_never_infers(self):
         # Actual retaining transport sees only an offline 404. This exercises
         # startup -> calibration failure checkpoint, not mere mock forwarding.
