@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import dataclasses
 import io
@@ -53,6 +54,28 @@ class FakeModel:
             time.sleep(0.1)
         if path == self.fail_path:
             return 503, {"error": "synthetic unavailable"}
+        if path == "/v1/systemone":
+            question_id, raw_question = next(iter(bench.object_value(body["questions"]).items()))
+            question = bench.object_value(raw_question)
+            kind = question["type"]
+            if kind == "noul":
+                answer: dict[str, object] = {"type": kind, "noul": 0.75}
+            else:
+                criteria = question["criteria"]
+                weights = ({str(index): 3.0 if text == "first" else 1.0
+                            for index, text in enumerate(bench.array_value(criteria))}
+                           if kind == "score" else {key: 3.0 if key == "first" else 1.0
+                                                  for key in bench.object_value(criteria)})
+                total = sum(weights.values())
+                probabilities = {key: weight / total for key, weight in weights.items()}
+                answer = {"type": kind, "probabilities": probabilities, "confidence": 0.5}
+                if kind == "score":
+                    answer |= {"score": sum(int(key) * value for key, value in probabilities.items()),
+                               "legend": {str(index): text for index, text in enumerate(bench.array_value(criteria))}}
+                else:
+                    answer["choice"] = max(probabilities, key=lambda key: probabilities[key])
+            return 200, {"model": body["model"], "answers": {question_id: answer},
+                         "usage": {"input_tokens": 12, "output_tokens": 3}, "request_id": "native-request"}
         if path == "/apply-template":
             return 200, {"prompt": json.dumps(body["messages"])}
         if path == "/tokenize":
@@ -94,12 +117,14 @@ class FakeModel:
 
 
 @contextlib.contextmanager
-def server(reply: Reply) -> Generator[str]:
+def server(reply: Reply, authorization: list[str] | None = None) -> Generator[str]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:
             pass
 
         def do_POST(self) -> None:
+            if authorization is not None:
+                authorization.append(self.headers.get("Authorization", ""))
             size = int(self.headers["Content-Length"])
             body = bench.object_value(json.loads(self.rfile.read(size)))
             status, response = reply(self.path, body)
@@ -395,6 +420,188 @@ class AdapterTests(unittest.TestCase):
             for row in report["cases"]:
                 for call in row["calls"]:
                     self.assertTrue(Path(call["artifact"]).exists())
+
+    def test_native_choice_order_metrics_and_provider_metadata(self) -> None:
+        item = dataclasses.replace(fixture(), special={"new": frozenset({"first"}), "unknown": frozenset({"second"})})
+        model = FakeModel()
+        variants = self.variants(item)
+        with server(model.reply) as url:
+            rows = [bench.run_variant(item, variant, "native", ChatClient(url, "", 2), self.settings()) for variant in variants]
+        for row in rows:
+            self.assertTrue(row.full_coverage, row.error)
+            self.assertTrue(row.correct)
+            self.assertEqual(row.probabilities, {"first": 0.75, "second": 0.25})
+            self.assertEqual(row.sequence_logprobs, {})
+            self.assertIsNone(row.leaked_mass)
+            self.assertEqual(row.normalized_pmax, 0.5)
+            self.assertEqual(row.margin, 0.5)
+            self.assertAlmostEqual(cast(float, row.entropy), -0.75 * math.log(0.75) - 0.25 * math.log(0.25))
+            self.assertEqual(bench.object_value(row.native_response)["request_id"], "native-request")
+            self.assertEqual(bench.object_value(row.native_response)["usage"], {"input_tokens": 12, "output_tokens": 3})
+            self.assertEqual(len(row.calls), 1)
+        for (path, body), variant in zip(model.requests, variants):
+            self.assertEqual(path, "/v1/systemone")
+            self.assertEqual(set(body), {"model", "state", "questions"})
+            question = bench.object_value(bench.object_value(body["questions"])["q1"])
+            self.assertEqual(list(bench.object_value(question["criteria"])), list(variant.key_to_option.values()))
+            self.assertNotIn("GOLD_RATIONALE_NEVER_SEND", json.dumps(body))
+        summary = bench.object_value(bench.summarize(rows, (item,), 2, "native", 2)["all"])
+        self.assertEqual(summary["full_coverage_rate"], 1)
+        self.assertEqual(summary["accuracy"], 1)
+        self.assertEqual(summary["normalized_pmax_mean"], 0.5)
+        self.assertEqual(summary["argmax_confidence_brier"], 0.0625)
+        self.assertAlmostEqual(cast(float, summary["argmax_confidence_log_loss"]), -math.log(0.75))
+        self.assertEqual(bench.object_value(summary["order_stability"])["argmax_agreement"], 1)
+        self.assertEqual(bench.object_value(summary["order_stability"])["js_distance_mean"], 0)
+        confusion = bench.object_value(summary["special_confusion"])
+        self.assertEqual(bench.object_value(confusion["new"]), {"tp": 2, "fp": 0, "fn": 0, "tn": 0})
+        wrong = dataclasses.replace(rows[0], correct=False, margin=0.1)
+        self.assertEqual(bench.auroc([rows[0], wrong]), 1)
+
+    def test_native_noul_and_score_restore_original_option_identities(self) -> None:
+        for kind in ("noul", "score"):
+            model = FakeModel()
+            item = fixture(kind)
+            with self.subTest(kind=kind), server(model.reply) as url:
+                rows = [bench.run_variant(item, variant, "native", ChatClient(url, "", 2), self.settings())
+                        for variant in self.variants(item)]
+            expected = {"true": 0.75, "false": 0.25} if kind == "noul" else {"first": 0.75, "second": 0.25}
+            for row in rows:
+                self.assertTrue(row.full_coverage, row.error)
+                self.assertTrue(row.correct)
+                self.assertEqual(row.probabilities, expected)
+                self.assertEqual(row.scalar_metrics, bench.scalar_metrics(item, expected))
+            if kind == "score":
+                questions = [bench.object_value(bench.object_value(body["questions"])["q1"]) for _, body in model.requests]
+                self.assertEqual(questions[0]["criteria"], ["first", "second"])
+                self.assertEqual(questions[1]["criteria"], ["second", "first"])
+                answer = bench.object_value(bench.object_value(bench.object_value(rows[1].native_response)["answers"])["q1"])
+                self.assertEqual(answer["probabilities"], {"0": 0.25, "1": 0.75})
+                self.assertEqual(bench.object_value(rows[1].native_answer)["probabilities"], {"0": 0.75, "1": 0.25})
+
+    def test_native_model_drift_and_bad_distributions_are_item_failures(self) -> None:
+        invalid: tuple[tuple[str, object], ...] = (
+            ("model", "different-pin"), ("model", None),
+            ("probabilities", {"first": 1}), ("probabilities", {"first": 0.75, "second": 0.25, "extra": 0}),
+            ("probabilities", {"first": -0.1, "second": 1.1}),
+            ("probabilities", {"first": True, "second": 0}),
+            ("probabilities", {"first": "0.75", "second": 0.25}),
+            ("probabilities", {"first": float("nan"), "second": 0.25}),
+            ("probabilities", {"first": float("inf"), "second": 0.25}),
+            ("probabilities", {"first": 0.4, "second": 0.4}),
+            ("type", "score"), ("answers", {}), ("usage", {"input_tokens": -1, "output_tokens": 3}),
+        )
+        item = fixture()
+        model = FakeModel()
+        for field, value in invalid:
+            def reply(path: str, body: dict[str, object], field: str = field, value: object = value) -> tuple[int, dict[str, object]]:
+                status, response = model.reply(path, body)
+                if field in {"model", "answers", "usage"}:
+                    response[field] = value
+                else:
+                    bench.object_value(bench.object_value(response["answers"])["q1"])[field] = value
+                return status, response
+
+            with self.subTest(field=field, value=value), server(reply) as url:
+                row = bench.run_variant(item, self.variants(item)[0], "native", ChatClient(url, "", 2), self.settings())
+            self.assertFalse(row.full_coverage)
+            self.assertFalse(row.correct)
+            self.assertIsNone(row.option_id)
+            self.assertEqual(row.probabilities, {})
+            self.assertIsNotNone(row.error)
+            if field == "model":
+                self.assertIn("ModelDrift", cast(str, row.error))
+            summary = bench.object_value(bench.summarize([row], (item,), 2, "native", 1)["all"])
+            self.assertEqual((summary["n"], summary["accuracy"], summary["full_coverage_rate"]), (2, 0, 0))
+        for kind, probabilities in (("noul", 1.1), ("score", {"0": 0.75, "2": 0.25})):
+            def invalid_scalar_reply(path: str, body: dict[str, object], kind: str = kind, probabilities: object = probabilities) -> tuple[int, dict[str, object]]:
+                status, response = model.reply(path, body)
+                answer = bench.object_value(bench.object_value(response["answers"])["q1"])
+                answer["noul" if kind == "noul" else "probabilities"] = probabilities
+                return status, response
+
+            item = fixture(kind)
+            with self.subTest(kind=kind), server(invalid_scalar_reply) as url:
+                row = bench.run_variant(item, self.variants(item)[0], "native", ChatClient(url, "", 2), self.settings())
+            self.assertFalse(row.full_coverage)
+            self.assertEqual(row.probabilities, {})
+
+    def test_native_http_timeouts_and_slow_requests_stay_in_denominator(self) -> None:
+        item = fixture()
+        rows = []
+        for timeout in (False, True):
+            model = FakeModel()
+            if timeout:
+                model.delay_path = "/v1/systemone"
+            else:
+                model.fail_path = "/v1/systemone"
+            with server(model.reply) as url:
+                rows.append(bench.run_variant(item, self.variants(item)[int(timeout)], "native",
+                                             ChatClient(url, "", 0.02 if timeout else 2), self.settings()))
+        rows[0] = dataclasses.replace(rows[0], elapsed_seconds=12,
+                                      calls=(dataclasses.replace(rows[0].calls[0], wall_seconds=11),))
+        summary = bench.object_value(bench.summarize(rows, (item,), 2, "native", 13)["all"])
+        self.assertEqual((summary["n"], summary["accuracy"], summary["full_coverage_rate"]), (2, 0, 0))
+        self.assertEqual((summary["http_errors"], summary["timeout_requests"]), (2, 1))
+        self.assertEqual((summary["over_10s_requests"], summary["over_10s_item_variants"]), (1, 1))
+
+    def test_native_cli_auth_redaction_state_warning_and_manifest(self) -> None:
+        model = FakeModel()
+        authorization: list[str] = []
+        key = "synthetic-native-key"
+
+        def reply(path: str, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+            status, response = model.reply(path, body)
+            response["request_id"] = key
+            return status, response
+
+        with tempfile.TemporaryDirectory() as directory, server(reply, authorization) as url:
+            output = Path(directory) / "native.json"
+            argv = ["system_one_benchmark.py", "--fixtures", str(DATASET), "--base-url", url,
+                    "--model", "pin", "--mode", "native", "--output", str(output),
+                    "--artifacts-dir", str(Path(directory) / "raw"), "--api-key-env", "NATIVE_TEST_API_KEY",
+                    "--state-token-warning", "1"]
+            stdout = io.StringIO()
+            with patch("sys.argv", argv), patch.dict("os.environ", {"NATIVE_TEST_API_KEY": key}), patch("sys.stdout", stdout):
+                self.assertEqual(bench.main(), 0)
+            self.assertEqual(authorization, [f"Bearer {key}"] * 8)
+            self.assertNotIn(key, stdout.getvalue())
+            report = json.loads(output.read_bytes())
+            manifest = json.loads(output.with_suffix(".manifest.json").read_bytes())
+            self.assertTrue(report["complete"])
+            self.assertEqual(report["modes"]["native"]["all"]["n"], 8)
+            self.assertEqual(manifest["settings"]["state_token_warning"], 1)
+            self.assertEqual(len(manifest["native_variant_requests"]), 8)
+            for row in report["cases"]:
+                self.assertGreater(row["state_bytes"], 4)
+                self.assertEqual(row["state_estimated_tokens"], row["state_bytes"] / 4)
+                self.assertTrue(row["state_token_warning_exceeded"])
+                self.assertEqual(row["native_response"]["request_id"], "[REDACTED_API_KEY]")
+            self.assertEqual(report["modes"]["native"]["all"]["state_token_warning_item_variants"], 8)
+            for path in Path(directory).rglob("*.json"):
+                text = path.read_text()
+                self.assertNotIn(key, text)
+                record = json.loads(text)
+                if "response_body_base64" in record:
+                    self.assertNotIn(key.encode(), base64.b64decode(record["response_body_base64"]))
+                    self.assertTrue(record["credential_redaction"])
+            # The heuristic uses UTF-8 bytes, with compact JSON for structured state.
+            self.assertEqual(bench.state_byte_size("é"), 2)
+            self.assertEqual(bench.state_byte_size({"a": "é"}), len('{"a":"é"}'.encode()))
+            for threshold in ("0", "-1", "nan", "inf"):
+                with patch("sys.argv", argv + ["--state-token-warning", threshold]), patch("sys.stderr", io.StringIO()):
+                    self.assertEqual(bench.main(), 2)
+
+    def test_native_state_warning_threshold_is_strict(self) -> None:
+        item = dataclasses.replace(fixture(), state="é" * 4)
+        model = FakeModel()
+        with server(model.reply) as url:
+            rows = [bench.run_variant(item, self.variants(item)[0], "native", ChatClient(url, "", 2),
+                                      dataclasses.replace(self.settings(), state_token_warning=threshold))
+                    for threshold in (2, 1)]
+        self.assertEqual([row.state_bytes for row in rows], [8, 8])
+        self.assertEqual([row.state_estimated_tokens for row in rows], [2, 2])
+        self.assertEqual([row.state_token_warning_exceeded for row in rows], [False, True])
 
     def test_single_option_normalized_gate_and_score_are_defined(self) -> None:
         item = fixture("score")

@@ -4,8 +4,8 @@
 Use case: state/questions/gold enter, per-variant scores and evidence leave; every
 selected item remains in the denominator, gold never enters a prompt. Side effects
 are HTTP and local files. Actual variation: templates, native profiles, option
-order, endpoint, concurrency and budgets. This is a local adapter benchmark, NOT
-an implementation of /v1/systemone or a measurement of Jev's retry policy.
+order, endpoint, concurrency and budgets. Native mode measures /v1/systemone;
+direct/thinking modes adapt local models. No mode simulates Jev's retry policy.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ from published_knowledge_benchmark import native_profile, unique_object
 VERSION = "system-one-option-distribution-v1"
 DEFAULT_TEMPLATE = Path(__file__).with_name("system_one_prompt.txt")
 LIMITATIONS = (
-    "Local model adapter, not the production Jev endpoint. Synthetic fixtures are "
-    "smoke tests, NOT ZagDB gold or evidence of model quality. All selected "
+    "Direct/thinking modes are local model adapters; native mode calls the actual "
+    "decision endpoint. Synthetic fixtures are smoke tests, NOT ZagDB gold or evidence of model quality. All selected "
     "item-variants are accuracy/validity/coverage denominators, including failures. "
     "Distribution statistics require full coverage; their sample counts are explicit. "
     "Thinking scores final-key accuracy only, never invented distributions. "
@@ -46,7 +46,10 @@ LIMITATIONS = (
     " Native score scalar = expected zero-based original legend index; ZagDB "
     "does not prescribe expectation versus argmax. Probability and scalar metrics "
     "are reported separately; thresholds are diagnostics, not fixture gold. "
-    "Native response is null if actual usage is unavailable; no fake zero usage."
+    "Adapter native response is null if actual usage is unavailable; no fake zero usage. "
+    "Native mode retains the provider response and has no forced-token leaked-mass estimate. "
+    "State tokens are estimated as UTF-8 bytes/4, not measured by the server tokenizer; "
+    "a warning cannot prove or rule out silent runtime truncation."
 )
 
 
@@ -101,6 +104,7 @@ class Settings:
     direct_prefill: str
     thinking_profile: dict[str, object]
     max_tokens: int
+    state_token_warning: float = 16384
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -126,6 +130,9 @@ class Outcome:
     elapsed_seconds: float
     error: str | None
     calls: tuple[ApiResult, ...]
+    state_bytes: int
+    state_estimated_tokens: float
+    state_token_warning_exceeded: bool
 
 
 def parse_item(value: object) -> Item:
@@ -148,8 +155,7 @@ def parse_item(value: object) -> Item:
     state = row.get("state")
     if not isinstance(state, (str, dict, list)):
         raise TypeError("state must be Structured (string, object or array)")
-    state_bytes = state.encode() if isinstance(state, str) else json.dumps(state, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
-    if len(state_bytes) > 32768:
+    if state_byte_size(state) > 32768:
         raise ValueError("state must be at most 32768 UTF-8 bytes")
     gold_row = object_value(row.get("gold"))
     gold = frozenset(text_value(key) for key in array_value(gold_row.get("option_ids")))
@@ -172,6 +178,11 @@ def parse_item(value: object) -> Item:
         raise ValueError("gold must contain an effective correct option")
     return Item(text_value(row.get("id")), text_value(row.get("family")),
                 text_value(row.get("difficulty")), state, question, options, gold, defer, special)
+
+
+def state_byte_size(state: object) -> int:
+    text = state if isinstance(state, str) else json.dumps(state, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return len(text.encode())
 
 
 def native_request(item: Item, model: str) -> dict[str, object]:
@@ -308,6 +319,51 @@ def make_variants(item: Item, template: str, count: int, seed: int, system_rule:
     return tuple(variants)
 
 
+def native_variant_request(item: Item, variant: Variant, model: str) -> dict[str, object]:
+    """Reuse the exact seeded prompt ordering without sending a prompt adapter."""
+    by_id = {option.id: option for option in item.options}
+    ordered = tuple(by_id[option_id] for option_id in variant.key_to_option.values())
+    return native_request(dataclasses.replace(item, options=ordered), model)
+
+
+def native_probabilities(item: Item, variant: Variant, response: dict[str, object], model: str) -> dict[str, float]:
+    """Validate coverage at the wire boundary, then restore fixture identities."""
+    if response.get("model") != model:
+        raise ValueError("ModelDrift: response model does not equal request pin")
+    answers = object_value(response.get("answers"))
+    question_id = text_value(item.question["id"])
+    if set(answers) != {question_id}:
+        raise ValueError("native answer coverage must match requested question ids")
+    answer = object_value(answers[question_id])
+    kind = item.question["type"]
+    if answer.get("type") != kind:
+        raise ValueError("native answer type does not match question")
+    usage = object_value(response.get("usage"))
+    if any(type(usage.get(key)) is not int or cast(int, usage[key]) < 0 for key in ("input_tokens", "output_tokens")):
+        raise ValueError("native usage must contain nonnegative input/output token counts")
+    if response.get("request_id") is not None:
+        text_value(response["request_id"])
+    if kind == "noul":
+        raw = {"true": answer.get("noul")}
+        mapping = {"true": "true"}
+    else:
+        raw = object_value(answer.get("probabilities"))
+        mapping = ({str(index): option_id for index, option_id in enumerate(variant.key_to_option.values())}
+                   if kind == "score" else {option.id: option.id for option in item.options})
+    if raw.keys() != mapping.keys():
+        raise ValueError("native probability coverage has missing or extra options")
+    probabilities: dict[str, float] = {}
+    for key, value in raw.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("native probability must be finite and within [0, 1]")
+        probabilities[mapping[key]] = float(value)
+    if kind == "noul":
+        probabilities["false"] = 1 - probabilities["true"]
+    if not math.isclose(sum(probabilities.values()), 1, rel_tol=0, abs_tol=1e-5):
+        raise ValueError("native probability mass must sum to one")
+    return probabilities
+
+
 def is_correct(item: Item, option_id: str | None) -> bool:
     if option_id is None:
         return False
@@ -363,6 +419,7 @@ def run_variant(item: Item, variant: Variant, mode: str, client: ChatClient, set
     leaked = entropy = margin = normalized = None
     error = None
     full_coverage = False
+    provider_response: dict[str, object] | None = None
     case_id = f"{item.id}/{variant.id}/{mode}"
 
     def post(path: str, body: dict[str, object]) -> dict[str, object]:
@@ -386,6 +443,10 @@ def run_variant(item: Item, variant: Variant, mode: str, client: ChatClient, set
             if key is None:
                 raise ValueError("final content must be exactly one key, without explanation or alternatives")
             option_id = variant.key_to_option[key]
+        elif mode == "native":
+            response = post("v1/systemone", native_variant_request(item, variant, settings.model))
+            probabilities = native_probabilities(item, variant, response, settings.model)
+            provider_response = response
         else:
             rendered = post("apply-template", {"model": settings.model, "messages": variant.messages,
                                               "chat_template_kwargs": settings.direct_template_kwargs})
@@ -414,6 +475,7 @@ def run_variant(item: Item, variant: Variant, mode: str, client: ChatClient, set
             leaked = max(0.0, 1 - raw_mass)
             by_key = normalize(scores)
             probabilities = {variant.key_to_option[key]: value for key, value in by_key.items()}
+        if mode != "thinking":
             option_id = max(probabilities, key=lambda option: probabilities[option])
             ordered = sorted(probabilities.values(), reverse=True)
             entropy = -sum(p * math.log(p) for p in ordered if p)
@@ -422,13 +484,17 @@ def run_variant(item: Item, variant: Variant, mode: str, client: ChatClient, set
             full_coverage = True
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         error = str(exc)
+    state_bytes = state_byte_size(item.state)
     return Outcome(item.id, item.family, variant.id, mode, variant.key_to_option,
                    option_id, is_correct(item, option_id), full_coverage, probabilities,
                    scores, first, leaked, entropy, margin, normalized,
                    native_answer(item, probabilities, normalized) if full_coverage and normalized is not None else None,
-                   native_response(item, settings.model, probabilities, normalized, calls) if full_coverage and normalized is not None else None,
+                   provider_response if mode == "native" else (
+                       native_response(item, settings.model, probabilities, normalized, calls)
+                       if full_coverage and normalized is not None else None),
                    scalar_metrics(item, probabilities),
-                   time.monotonic() - started, error, tuple(calls))
+                   time.monotonic() - started, error, tuple(calls),
+                   state_bytes, state_bytes / 4, state_bytes / 4 > settings.state_token_warning)
 
 
 def mean(values: list[float]) -> float | None:
@@ -489,10 +555,12 @@ def summarize(rows: list[Outcome], selected: tuple[Item, ...], variants: int, mo
             "n": n, "n_items": len(items), "attempted": len(group), "unattempted": n - len(group),
             "valid_key_rate": sum(row.option_id is not None for row in group) / n,
             "accuracy": sum(row.correct for row in group) / n,
-            "full_coverage_rate": len(distributions) / n if mode == "direct" else None,
+            "full_coverage_rate": len(distributions) / n if mode != "thinking" else None,
             "distribution_n": len(distributions), "special_confusion": confusion,
             "native_response_n": sum(row.native_response is not None for row in group),
             "scalars": summarize_scalars(group),
+            "normalized_pmax_mean": mean([row.normalized_pmax for row in distributions if row.normalized_pmax is not None]),
+            "state_token_warning_item_variants": sum(row.state_token_warning_exceeded for row in group),
             "entropy_correct": mean([row.entropy for row in distributions if row.correct and row.entropy is not None]),
             "entropy_wrong": mean([row.entropy for row in distributions if not row.correct and row.entropy is not None]),
             "margin_correct": mean([row.margin for row in distributions if row.correct and row.margin is not None]),
@@ -520,7 +588,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fixtures", type=Path, nargs="+", required=True)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--mode", choices=("direct", "thinking", "both"), default="both")
+    parser.add_argument("--mode", choices=("direct", "thinking", "both", "native"), default="both")
     parser.add_argument("--direct-template-kwargs", default="{}")
     parser.add_argument("--direct-prefill", default="")
     parser.add_argument("--thinking-extra-body", default="{}")
@@ -531,6 +599,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--measurement-timeout", type=float, default=600)
+    parser.add_argument("--state-token-warning", type=float, default=16384,
+                        help="warn when state UTF-8 bytes/4 exceeds this approximate token count (default: 16384)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--manifest", type=Path)
@@ -544,6 +614,8 @@ def main() -> int:
     try:
         if args.concurrency <= 0 or args.max_tokens <= 0 or not math.isfinite(args.measurement_timeout) or args.measurement_timeout <= 0:
             raise ValueError("positive finite concurrency and inference budgets required")
+        if not math.isfinite(args.state_token_warning) or args.state_token_warning <= 0:
+            raise ValueError("state token warning threshold must be positive and finite")
         items, hashes = load_fixtures(args.fixtures, args.model)
         template = args.prompt_template.read_text()
         if set(Template(template).get_identifiers()) != {"state", "question", "options"}:
@@ -552,7 +624,7 @@ def main() -> int:
         profile = native_profile(args.thinking_extra_body)
         provenance = object_value(json.loads(args.manifest.read_bytes(), object_pairs_hook=unique_object)) if args.manifest else None
         json.dumps([template_kwargs, provenance], allow_nan=False)
-        settings = Settings(args.model, template_kwargs, args.direct_prefill, profile, args.max_tokens)
+        settings = Settings(args.model, template_kwargs, args.direct_prefill, profile, args.max_tokens, args.state_token_warning)
         prepared = [(item, variant) for item in items for variant in make_variants(item, template, args.variants, args.seed, args.system_rule)]
     except (ValueError, TypeError, OSError, KeyError, RecursionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -579,6 +651,8 @@ def main() -> int:
         "system_rule": args.system_rule, "seed": args.seed, "variants": args.variants,
         "settings": dataclasses.asdict(settings), "prepared": [dataclasses.asdict(variant) | {"item_id": item.id} for item, variant in prepared],
         "native_requests": [native_request(item, args.model) for item in items],
+        "native_variant_requests": [native_variant_request(item, variant, args.model) | {"item_id": item.id, "variant_id": variant.id}
+                                    for item, variant in prepared] if args.mode == "native" else [],
         "provenance": provenance, "provenance_status": "operator supplied, not independently verified" if provenance else "not supplied; runtime identities unknown",
         "limitations": LIMITATIONS,
     }, api_key=api_key)

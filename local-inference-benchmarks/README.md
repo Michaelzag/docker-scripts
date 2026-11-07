@@ -530,9 +530,10 @@ offline suite above.
 
 ## System One option-distribution adapter
 
-`system_one_benchmark.py` benchmarks a **local adapter** for ZagDB's Jev-style
-`/v1/systemone` decision contract. It does not call that production endpoint,
-implement its retries, or measure chat quality as a substitute for distributions.
+`system_one_benchmark.py` benchmarks ZagDB's Jev-style `/v1/systemone` decision
+contract: `--mode native` calls a native provider directly, while `direct` and
+`thinking` adapt local chat/completion models. No mode implements Jev's retries
+or measures chat quality as a substitute for distributions.
 `datasets/system-one-synthetic-smoke/smoke.jsonl` contains four clearly labelled
 **SYNTHETIC smoke items, NOT ZagDB gold**: noul, choice, score, and uncertainty.
 They only establish harness behavior. Real owner-supplied fixtures can be passed
@@ -547,7 +548,8 @@ and optionally `rationale`. `state` is a native Structured string, object or arr
 remain accepted at the JSON boundary. Internally markers are immutable sets:
 NEW/unknown gold membership uses set intersection, and prediction uses membership.
 Noul requires the ids `true` and `false`. Score option ids remain fixture identities;
-the native legend uses their **original zero-based order**, not prompt order.
+the canonical benchmark legend uses their **original zero-based order**. A native
+provider response retains the requested variant's legend order separately.
 Gold and rationale never enter the model prompt. Defer is correct **only** when
 `defer_acceptable` and the selected id is in the defer set, even if a disallowed
 defer id is among gold ids. Defer confusion treats `defer_acceptable` as its
@@ -602,7 +604,7 @@ tool-free final content that strips to **exactly one case-sensitive key** is val
 Explanations, alternatives, truncation and reasoning-only answers are failures.
 Thinking reports accuracy/validity, **not** fabricated option distributions.
 
-Native direct answers are emitted as tagged `native_answer` plus `native_response`
+Direct-mode adapter answers are emitted as tagged `native_answer` plus `native_response`
 with the exact model pin, ordered question-id answer map, and usage. Noul emits
 `P(true)`; choice emits argmax option id, probabilities and normalized-pmax
 confidence; score emits a `"0"`..`"K-1"` legend with exact original descriptions,
@@ -620,6 +622,59 @@ not tokenizer/template calls (cached prompts may reduce evaluated input counts).
 It reads `usage.prompt_tokens/completion_tokens`, `tokens_evaluated/predicted`,
 or `timings.prompt_n/predicted_n`; missing usage leaves `native_response=null`,
 never fake zero usage. `native_response_n` exposes that coverage.
+
+### Native endpoint mode
+
+`--mode native` POSTs the native `DecisionRequest` to `/v1/systemone` on the supplied
+base URL's origin (both an origin URL and an origin with `/v1` are accepted).
+It uses the shared HTTP client's `Authorization: Bearer` header, loading the
+credential from `--api-key-env`; headers and the credential are never persisted.
+Echoes in report, manifest, and raw request/response artifacts use existing redaction.
+No prompt/logprob adapter, template/tokenizer calls, or inference-profile fields
+are sent to this endpoint. `both` still means only direct plus thinking.
+
+Choice reads `probabilities` keyed by option id. Noul maps `noul` to
+`{"true": noul, "false": 1-noul}`. Score reads probabilities keyed by the requested
+legend indices `"0"`..`"K-1"` and maps them back to original fixture option ids.
+The identical seeded variant generator orders choice criteria and score criteria,
+so order-stability metrics compare the same semantic options across all modes.
+The echoed model must equal `--model` exactly; mismatch or omission is an item
+failure labelled `ModelDrift`. Missing/extra question or probability keys, wrong
+answer types, booleans/non-numbers, nonfinite or out-of-range probabilities, and
+mass not summing to one (absolute tolerance `1e-5`) are coverage failures.
+They are never zero-filled or renormalized into apparently valid answers.
+
+Native mode uses the same accuracy, special confusion, normalized-pmax,
+entropy/margin, AUROC, Brier/log-loss, order-stability and latency summaries as
+direct mode. HTTP errors, timeouts and >10-second requests remain counted.
+`native_response` retains the provider's response, including real `usage` and
+optional `request_id`; `native_answer` and scalar metrics express the canonical
+original fixture order for cross-mode comparison. Native mode does not estimate
+forced-token leaked mass, so those fields are null.
+
+Every case records `state_bytes`, `state_estimated_tokens` (`state_bytes/4`), and
+`state_token_warning_exceeded`. `--state-token-warning` defaults to 16384; only
+strictly exceeding it sets the warning. Structured state uses compact UTF-8 JSON.
+This is a **heuristic**, not server-tokenizer accounting: question/prompt overhead
+is not included, so a false warning flag does not rule out silent truncation.
+The existing 32768-byte state limit means the default warning cannot fire for
+accepted fixtures under this heuristic; use a lower threshold for a conservative
+diagnostic. Armada's runtime can silently truncate state to its bound; these
+fields expose input size, not proof that the provider consumed every token.
+
+```sh
+python3 system_one_benchmark.py \
+  --fixtures /path/to/owner-supplied-system-one.jsonl \
+  --base-url http://10.0.3.130:5919 --model Cloudflare/clef-flash \
+  --mode native --api-key-env SYSTEM_ONE_API_KEY \
+  --state-token-warning 16384 --variants 2 --concurrency 2 \
+  --measurement-timeout 600 --label armada-native-system-one \
+  --output results/unique-native-system-one.json \
+  --artifacts-dir results/unique-native-system-one-raw
+```
+
+The endpoint/model pin and credential variable name are operator inputs, not
+autodiscovered runtime provenance. Offline tests make no calls to this endpoint.
 
 ### Running and interpreting
 
