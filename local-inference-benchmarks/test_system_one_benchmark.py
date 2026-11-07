@@ -6,6 +6,7 @@ import base64
 import contextlib
 import dataclasses
 import io
+import itertools
 import json
 import math
 import tempfile
@@ -47,6 +48,9 @@ class FakeModel:
         self.thinking_text = " A \n"
         self.thinking_finish = "stop"
         self.multi = False
+        self.missing_primary_key: str | None = None
+        self.first_probability = 0.6
+        self.other_probability = 0.2
 
     def reply(self, path: str, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         self.requests.append((path, body))
@@ -82,7 +86,8 @@ class FakeModel:
             key = str(body["content"])
             return 200, {"tokens": list(range(len(key))) if self.multi else [100 + ord(key)]}
         if path == "/completion":
-            key = json.loads(str(body["grammar"]).removeprefix("root ::= "))
+            keys = [json.loads(term) for term in str(body["grammar"]).removeprefix("root ::= ").split(" | ")]
+            key = keys[0]
             if self.multi:
                 tokens = list(key)
                 probabilities = [0.6, 0.5 if key[-1] == "X" else 0.25]
@@ -90,7 +95,7 @@ class FakeModel:
                 tokens = [key]
                 # Stable by semantic option rather than positional letter.
                 prompt = str(body["prompt"])
-                probability = 0.6 if f"{key}. first" in prompt or f"{key}. true" in prompt else 0.2
+                probability = self.first_probability if f"{key}. first" in prompt or f"{key}. true" in prompt else self.other_probability
                 probabilities = [probability]
             records = []
             for token, probability in zip(tokens, probabilities):
@@ -104,6 +109,14 @@ class FakeModel:
                     cast(list[dict[str, object]], record["top_logprobs"]).append({
                         "token": token, "logprob": score + (0.2 if self.mismatch_top else 0),
                     })
+                if len(keys) > 1:
+                    record["top_logprobs"] = [
+                        {"token": candidate, "logprob": math.log(
+                            self.first_probability if f"{candidate}. first" in str(body["prompt"]) or f"{candidate}. true" in str(body["prompt"])
+                            else self.other_probability
+                        ) + (0.2 if self.mismatch_top and candidate == token else 0)}
+                        for candidate in keys if candidate != self.missing_primary_key
+                    ]
                 if self.omit_logprob and key == "B":
                     del record["logprob"]
                 records.append(record)
@@ -174,9 +187,9 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(result.native_response, {
                 "model": "candidate-pin", "answers": {"q1": {"type": "choice", "choice": "first",
                 "probabilities": result.probabilities, "confidence": result.normalized_pmax}},
-                "usage": {"input_tokens": 22, "output_tokens": 2},
+                "usage": {"input_tokens": 11, "output_tokens": 1},
             })
-            self.assertEqual(len(result.calls), 5)
+            self.assertEqual(len(result.calls), 4)
             for call in result.calls:
                 self.assertIsNotNone(call.artifact)
                 record = json.loads(Path(cast(str, call.artifact)).read_bytes())
@@ -184,12 +197,12 @@ class AdapterTests(unittest.TestCase):
                 self.assertTrue(record["response_body_base64"])
                 self.assertEqual(record["response"], call.response)
             completions = [body for path, body in model.requests if path == "/completion"]
-            self.assertEqual(len(completions), 2)
+            self.assertEqual(len(completions), 1)
             for body in completions:
                 self.assertIs(body["post_sampling_probs"], False)
                 self.assertIs(body["cache_prompt"], True)
                 self.assertEqual(body["temperature"], 0)
-                self.assertGreaterEqual(cast(int, body["n_probs"]), 20)
+                self.assertGreaterEqual(cast(int, body["n_probs"]), 50)
                 self.assertTrue(str(body["prompt"]).endswith("<|message|>"))
             encoded = json.dumps(model.requests)
             self.assertNotIn("GOLD_RATIONALE_NEVER_SEND", encoded)
@@ -212,11 +225,139 @@ class AdapterTests(unittest.TestCase):
         self.assertAlmostEqual(cast(float, result.leaked_mass), 0.4)
         self.assertEqual(len(result.first_token_logprobs), 2)
 
+    def test_single_forward_pass_scores_all_keys_without_forced_fallback(self) -> None:
+        model = FakeModel()
+        item = fixture()
+        with server(model.reply) as url:
+            row = bench.run_variant(item, self.variants(item)[0], "direct", ChatClient(url, "", 2), self.settings())
+        completions = [body for path, body in model.requests if path == "/completion"]
+        self.assertEqual(len(completions), 1)
+        self.assertEqual(completions[0]["grammar"], 'root ::= "A" | "B"')
+        self.assertGreaterEqual(cast(int, completions[0]["n_probs"]), 50)
+        self.assertTrue(row.full_coverage, row.error)
+        self.assertEqual(row.scoring_source, "single")
+        self.assertFalse(row.mixed_sources)
+        self.assertAlmostEqual(cast(float, row.raw_key_mass), 0.8)
+        self.assertAlmostEqual(row.probabilities["first"], 0.75)
+
+    def test_only_missing_key_uses_forced_fallback_and_marks_mixed_sources(self) -> None:
+        model = FakeModel()
+        model.missing_primary_key = "B"
+        item = fixture()
+        with server(model.reply) as url:
+            row = bench.run_variant(item, self.variants(item)[0], "direct", ChatClient(url, "", 2), self.settings())
+        completions = [body for path, body in model.requests if path == "/completion"]
+        self.assertEqual([body["grammar"] for body in completions], ['root ::= "A" | "B"', 'root ::= "B"'])
+        self.assertTrue(row.full_coverage, row.error)
+        self.assertEqual(row.scoring_source, "mixed")
+        self.assertTrue(row.mixed_sources)
+        self.assertAlmostEqual(row.probabilities["first"], 0.75)
+
+    def test_overshoot_is_rejected_only_for_single_source(self) -> None:
+        item = fixture()
+        for missing in (None, "B"):
+            model = FakeModel()
+            model.first_probability = 0.7
+            model.other_probability = 0.35
+            model.missing_primary_key = missing
+            with self.subTest(missing=missing), server(model.reply) as url:
+                row = bench.run_variant(item, self.variants(item)[0], "direct", ChatClient(url, "", 2), self.settings())
+                self.assertEqual(row.full_coverage, missing is not None)
+                self.assertAlmostEqual(cast(float, row.raw_key_mass), 1.05)
+                if missing:
+                    self.assertAlmostEqual(row.probabilities["first"], 2 / 3)
+                    self.assertEqual(row.leaked_mass, 0)
+                    self.assertTrue(row.mixed_sources)
+                else:
+                    self.assertIn("mass exceeds one", row.error or "")
+
+    def test_repeat_draw_drift_preserves_first_draw_in_direct_and_native_modes(self) -> None:
+        item = fixture()
+        for mode in ("direct", "native"):
+            model = FakeModel()
+            draw_count = 0
+            distributions = ((0.75, 0.25), (0.74, 0.26), (0.2, 0.8))
+
+            def drifting_reply(
+                path: str, body: dict[str, object], *, model: FakeModel = model,
+                mode: str = mode, distributions: tuple[tuple[float, float], ...] = distributions,
+            ) -> tuple[int, dict[str, object]]:
+                nonlocal draw_count
+                scoring = path == ("/completion" if mode == "direct" else "/v1/systemone")
+                if scoring:
+                    first, second = distributions[draw_count]
+                    draw_count += 1
+                    model.first_probability, model.other_probability = first, second
+                status, response = model.reply(path, body)
+                if scoring and mode == "native":
+                    answer = bench.object_value(bench.object_value(response["answers"])["q1"])
+                    answer["probabilities"] = {"first": model.first_probability, "second": model.other_probability}
+                    answer["choice"] = "first" if model.first_probability > model.other_probability else "second"
+                return status, response
+
+            with self.subTest(mode=mode), server(drifting_reply) as url:
+                row = bench.run_variant(item, self.variants(item)[0], mode, ChatClient(url, "", 2),
+                                        dataclasses.replace(self.settings(), repeat_draws=3))
+            self.assertEqual(draw_count, 3)
+            self.assertTrue(row.correct)
+            self.assertEqual(row.option_id, "first")
+            self.assertAlmostEqual(row.probabilities["first"], 0.75)
+            self.assertAlmostEqual(cast(float, row.normalized_pmax), 0.5)
+            self.assertEqual(len(row.draws), 3)
+            self.assertEqual(row.draws[2].option_id, "second")
+            self.assertAlmostEqual(cast(float, row.drift["normalized_pmax_mean_absolute_difference"]), 0.08)
+            self.assertAlmostEqual(cast(float, row.drift["normalized_pmax_max_absolute_difference"]), 0.12)
+            self.assertAlmostEqual(cast(float, row.drift["per_option_probability_mean_absolute_difference"]), 1.1 / 3)
+            self.assertAlmostEqual(cast(float, row.drift["per_option_probability_max_absolute_difference"]), 0.55)
+            self.assertAlmostEqual(cast(float, row.drift["argmax_flip_rate"]), 2 / 3)
+            crossings = bench.object_value(row.drift["normalized_pmax_floor_crossings"])
+            self.assertEqual(crossings, {"0.5": True, "0.6": True, "0.7": False, "0.8": False, "0.9": False})
+            summary = bench.object_value(bench.summarize([row], (item,), 2, mode, 1)["all"])
+            drift = bench.object_value(summary["drift"])
+            self.assertEqual(drift["comparable_cases"], 1)
+            self.assertEqual(bench.object_value(drift["normalized_pmax_floor_crossing_cases"])["0.5"], 1)
+            self.assertAlmostEqual(cast(float, drift["argmax_flip_rate"]), 2 / 3)
+            self.assertEqual(bench.object_value(row.native_response)["usage"],
+                             {"input_tokens": 11, "output_tokens": 1} if mode == "direct"
+                             else {"input_tokens": 12, "output_tokens": 3})
+            scoring_bodies = [body for path, body in model.requests
+                              if path == ("/completion" if mode == "direct" else "/v1/systemone")]
+            self.assertEqual(scoring_bodies, [scoring_bodies[0]] * 3)
+
+    def test_repeat_failures_neither_replace_nor_invalidate_primary_draw(self) -> None:
+        item = fixture()
+        for mode, fail_first in itertools.product(("direct", "native"), (False, True)):
+            model = FakeModel()
+            draw_count = 0
+
+            def one_failed_draw(
+                path: str, body: dict[str, object], *, model: FakeModel = model,
+                mode: str = mode, fail_first: bool = fail_first,
+            ) -> tuple[int, dict[str, object]]:
+                nonlocal draw_count
+                status, response = model.reply(path, body)
+                if path == ("/completion" if mode == "direct" else "/v1/systemone"):
+                    draw_count += 1
+                    if draw_count == (1 if fail_first else 2):
+                        return 503, {"error": "synthetic analysis failure"}
+                return status, response
+
+            with self.subTest(mode=mode, fail_first=fail_first), server(one_failed_draw) as url:
+                row = bench.run_variant(item, self.variants(item)[0], mode, ChatClient(url, "", 2),
+                                        dataclasses.replace(self.settings(), repeat_draws=2))
+            self.assertEqual(draw_count, 2)
+            self.assertEqual(row.full_coverage, not fail_first)
+            self.assertEqual(row.correct, not fail_first)
+            self.assertEqual(row.drift["failed_draws"], 1)
+            self.assertEqual(row.drift["valid_draws"], 1)
+            self.assertIsNone(row.drift["argmax_flip_rate"])
+
     def test_missing_own_probability_and_disagreeing_top_are_coverage_failures(self) -> None:
         for mismatch in (False, True):
             model = FakeModel()
             model.omit_logprob = not mismatch
             model.mismatch_top = mismatch
+            model.missing_primary_key = "B" if not mismatch else None
             item = fixture()
             with self.subTest(mismatch=mismatch), server(model.reply) as url:
                 result = bench.run_variant(item, self.variants(item)[0], "direct", ChatClient(url, "", 2), self.settings())
@@ -253,8 +394,9 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(bench.auroc([dataclasses.replace(wrong, margin=rows[0].margin), rows[0]]), 0.5)
 
     def test_defer_rules_and_special_confusion(self) -> None:
-        item = dataclasses.replace(fixture(), special={"defer": frozenset({"first"}), "unknown": frozenset({"second"})})
-        self.assertFalse(bench.is_correct(item, "first"))  # Even if defer is listed in gold.
+        item = dataclasses.replace(fixture(), gold=frozenset({"second"}),
+                                   special={"defer": frozenset({"first"}), "unknown": frozenset({"second"})})
+        self.assertFalse(bench.is_correct(item, "first"))  # Non-gold deferral needs permission.
         self.assertTrue(bench.is_correct(dataclasses.replace(item, defer_acceptable=True), "first"))
         self.assertFalse(bench.is_correct(item, None))
         model = FakeModel()
@@ -280,7 +422,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_set_marker_defer_rules_apply_to_every_marked_option(self) -> None:
         item = dataclasses.replace(fixture(), special={"defer": frozenset({"first", "second"})})
-        self.assertFalse(bench.is_correct(item, "first"))
+        self.assertTrue(bench.is_correct(item, "first"))  # Explicit gold remains correct.
         self.assertFalse(bench.is_correct(item, "second"))
         allowed = dataclasses.replace(item, gold=frozenset(), defer_acceptable=True)
         self.assertTrue(bench.is_correct(allowed, "first"))
@@ -288,14 +430,15 @@ class AdapterTests(unittest.TestCase):
         row = json.loads(DATASET.read_text().splitlines()[1])
         row["special"] = {"defer": ["red", "new-label"]}
         row["gold"] = {"option_ids": ["new-label"], "defer_acceptable": False}
-        with self.assertRaisesRegex(ValueError, "effective correct"):
-            bench.parse_item(row)
+        explicit_gold = bench.parse_item(row)
+        self.assertTrue(bench.is_correct(explicit_gold, "new-label"))
+        self.assertFalse(bench.is_correct(explicit_gold, "red"))
         row["gold"] = {"option_ids": [], "defer_acceptable": True}
         parsed = bench.parse_item(row)
         self.assertTrue(bench.is_correct(parsed, "red"))
         self.assertTrue(bench.is_correct(parsed, "new-label"))
         row["special"] = {"defer": []}
-        with self.assertRaisesRegex(ValueError, "effective correct"):
+        with self.assertRaisesRegex(ValueError, "gold must name available options or permit defer"):
             bench.parse_item(row)
 
     def test_set_marker_confusion_uses_gold_intersection_and_prediction_membership(self) -> None:
@@ -310,6 +453,40 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(bench.object_value(confusion["new"]), {"tp": 2, "fp": 0, "fn": 0, "tn": 0})
         self.assertEqual(bench.object_value(confusion["unknown"]), {"tp": 0, "fp": 0, "fn": 0, "tn": 2})
         self.assertEqual(bench.object_value(confusion["defer"]), {"tp": 0, "fp": 0, "fn": 0, "tn": 0})
+
+    def test_explicit_defer_mapped_gold_loads_without_extra_permission(self) -> None:
+        for case_id in ("rule_usefulness-006", "rule_usefulness-012"):
+            row = {
+                "id": case_id, "family": "rule_usefulness", "difficulty": "medium",
+                "state": "SYNTHETIC regression: a matching rule is contested.",
+                "question": {"id": "q1", "type": "choice", "text": "Choose the rule effect.",
+                             "options": [{"id": key, "text": key} for key in
+                                         ("propose", "penalty", "contested", "not_applicable", "demoted")]},
+                "special": {"defer": ["contested"], "unknown": ["not_applicable"], "new": []},
+                "gold": {"option_ids": ["contested"], "defer_acceptable": False},
+            }
+            with self.subTest(case_id=case_id):
+                item = bench.parse_item(row)
+                self.assertTrue(bench.is_correct(item, "contested"))
+                self.assertFalse(bench.is_correct(item, "not_applicable"))
+
+    def test_gold_membership_precedes_defer_permission(self) -> None:
+        item = dataclasses.replace(fixture(), special={"defer": frozenset({"first", "second"})})
+        self.assertTrue(bench.is_correct(item, "first"))
+        self.assertFalse(bench.is_correct(item, "second"))
+        self.assertTrue(bench.is_correct(dataclasses.replace(item, defer_acceptable=True), "second"))
+        self.assertFalse(bench.is_correct(item, None))
+
+    def test_explicit_defer_gold_is_true_positive_in_confusion(self) -> None:
+        item = dataclasses.replace(fixture(), special={"defer": frozenset({"first"})})
+        model = FakeModel()
+        with server(model.reply) as url:
+            rows = [bench.run_variant(item, variant, "direct", ChatClient(url, "", 2), self.settings())
+                    for variant in self.variants(item)]
+        summary = bench.object_value(bench.summarize(rows, (item,), 2, "direct", 1)["all"])
+        confusion = bench.object_value(summary["special_confusion"])
+        self.assertEqual(bench.object_value(confusion["defer"]), {"tp": 2, "fp": 0, "fn": 0, "tn": 0})
+        self.assertEqual(summary["accuracy"], 1)
 
     def test_thinking_exact_final_parser_native_profile_and_truncation(self) -> None:
         model = FakeModel()
@@ -395,7 +572,7 @@ class AdapterTests(unittest.TestCase):
                 row["special"] = {key: [value] if value is not None else [] for key, value in row["special"].items()}
             fixtures.write_text("".join(json.dumps(row) + "\n" for row in fixture_rows))
             argv = ["system_one_benchmark.py", "--fixtures", str(fixtures), "--base-url", url,
-                    "--model", "pin", "--mode", "both", "--concurrency", "2", "--output", str(output),
+                    "--model", "pin", "--mode", "both", "--concurrency", "2", "--repeat-draws", "2", "--output", str(output),
                     "--artifacts-dir", str(Path(directory) / "raw"), "--manifest", str(provenance),
                     "--direct-template-kwargs", '{"enable_thinking":false}', "--system-rule", "RULE"]
             with patch("sys.argv", argv), patch.dict("os.environ", {"LOCAL_LLM_API_KEY": "synthetic-api-key"}), patch("sys.stdout", new=io.StringIO()):
@@ -410,10 +587,13 @@ class AdapterTests(unittest.TestCase):
             for mode in ("direct", "thinking"):
                 self.assertEqual(report["modes"][mode]["all"]["n"], 8)
             self.assertEqual(report["modes"]["direct"]["all"]["full_coverage_rate"], 1)
+            self.assertEqual(report["modes"]["direct"]["all"]["drift"]["comparable_cases"], 8)
+            self.assertEqual(report["modes"]["direct"]["all"]["scoring_source_counts"], {"single": 8, "mixed": 0})
             manifest = json.loads(output.with_suffix(".manifest.json").read_bytes())
             self.assertEqual(len(manifest["dataset_sha256"]), 1)
             self.assertEqual(len(manifest["native_requests"]), 4)
             self.assertEqual(manifest["provenance"]["runtime"], "fake local HTTP server")
+            self.assertEqual(manifest["settings"]["repeat_draws"], 2)
             self.assertEqual(manifest["fixtures_for_scoring_only"][1]["special"], {"new": ["new-label"]})
             self.assertTrue(output.with_suffix(".run-owner.json").exists())
             self.assertEqual(len(list((Path(directory) / "raw").glob("*.json"))), request_count)
