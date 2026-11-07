@@ -1,0 +1,248 @@
+{
+  "artifact": "mmlu-pro-32 broad-knowledge/hard-reasoning sample",
+  "seed": 20261107,
+  "dataset": {
+    "name": "MMLU-Pro",
+    "huggingface_id": "TIGER-Lab/MMLU-Pro",
+    "official": true,
+    "revision_sha": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+    "last_modified": "2026-05-02T06:26:05.000Z",
+    "retrieved_at_utc": "2026-11-07T07:54:14.069201+00:00",
+    "license": "MIT (HF API license tag; dataset card license: mit)",
+    "gated": false,
+    "private": false,
+    "config": "default",
+    "split": "test",
+    "num_rows_total": 12032,
+    "siblings": [
+      ".gitattributes",
+      "README.md",
+      "data/test-00000-of-00001.parquet",
+      "data/validation-00000-of-00001.parquet",
+      "eval.yaml",
+      "run_claude3.py",
+      "run_gpt4o.py"
+    ],
+    "paper": "arXiv:2406.01574 (per HF tags)",
+    "upstream_repo_per_card": "TIGER-AI-Lab/MMLU-Pro (TIGER-Lab/MMLU-Pro URL 404 at retrieval; HF is authoritative here)",
+    "revision_pin_caveat": "The /rows URL is unversioned: no per-page revision pin was proven by the response. revision_sha b189ec765aa7ed75c8acfea42df31fdae71f97be is the contemporaneous HF main sha observed at retrieval, NOT a per-page binding. Correct characterization: captured complete official public Rows view, contemporaneous main sha; exact retained subset SHA (gold_sha256 / prompts_sha256) is the authoritative pin for the 32 selected records."
+  },
+  "retrieval": {
+    "method": "HF datasets-server /rows JSON API (UNVERSIONED URL), full pagination offset=0..12000 step 100, length=100; captured complete official public Rows view at retrieval time, contemporaneous main sha b189ec765aa7ed75c8acfea42df31fdae71f97be; no per-page revision binding was returned or proven",
+    "url_template": "https://datasets-server.huggingface.co/rows?dataset=TIGER-Lab%2FMMLU-Pro&config=default&split=test&offset={offset}&length=100",
+    "coverage": "12032/12032 rows collected, partial=false on every page",
+    "filter_endpoint_note": "/filter returned HTTP 500 (HF auth check timeout) for where=\"category\"='math'; rows pagination used instead, so coverage is complete, not filter-partial",
+    "parquet_note": "No parquet downloaded, no packages installed; JSON rows API only"
+  },
+  "category_population_counts_all": {
+    "biology": 717,
+    "business": 789,
+    "chemistry": 1132,
+    "computer science": 410,
+    "economics": 844,
+    "engineering": 969,
+    "health": 818,
+    "history": 381,
+    "law": 1101,
+    "math": 1351,
+    "other": 924,
+    "philosophy": 499,
+    "physics": 1299,
+    "psychology": 798
+  },
+  "selection_algorithm": {
+    "description": "Single Python random.Random(20261107); categories processed in order math,physics,chemistry,biology,computer science,engineering,history,philosophy; per category population = valid rows sorted by (question_id,row_idx); rng.sample(population,4) sequentially (RNG state carries across categories); chosen then sorted by (question_id,row_idx) for case order; case_ids mmlu-pro-001..032 in that order",
+    "per_category": {
+      "math": {
+        "population_valid": 1351,
+        "population_total_incl_skipped": 1351,
+        "skipped": [],
+        "sample_order_question_ids": [
+          8848,
+          8469,
+          8595,
+          7757
+        ],
+        "selected_question_ids_sorted": [
+          7757,
+          8469,
+          8595,
+          8848
+        ]
+      },
+      "physics": {
+        "population_valid": 1299,
+        "population_total_incl_skipped": 1299,
+        "skipped": [],
+        "sample_order_question_ids": [
+          9350,
+          10302,
+          9684,
+          9543
+        ],
+        "selected_question_ids_sorted": [
+          9350,
+          9543,
+          9684,
+          10302
+        ]
+      },
+      "chemistry": {
+        "population_valid": 1132,
+        "population_total_incl_skipped": 1132,
+        "skipped": [],
+        "sample_order_question_ids": [
+          3973,
+          3672,
+          4168,
+          3658
+        ],
+        "selected_question_ids_sorted": [
+          3658,
+          3672,
+          3973,
+          4168
+        ]
+      },
+      "biology": {
+        "population_valid": 717,
+        "population_total_incl_skipped": 717,
+        "skipped": [],
+        "sample_order_question_ids": [
+          2960,
+          3024,
+          3219,
+          2882
+        ],
+        "selected_question_ids_sorted": [
+          2882,
+          2960,
+          3024,
+          3219
+        ]
+      },
+      "computer science": {
+        "population_valid": 410,
+        "population_total_incl_skipped": 410,
+        "skipped": [],
+        "sample_order_question_ids": [
+          10503,
+          10767,
+          10454,
+          10529
+        ],
+        "selected_question_ids_sorted": [
+          10454,
+          10503,
+          10529,
+          10767
+        ]
+      },
+      "engineering": {
+        "population_valid": 969,
+        "population_total_incl_skipped": 969,
+        "skipped": [],
+        "sample_order_question_ids": [
+          11457,
+          11850,
+          11528,
+          12239
+        ],
+        "selected_question_ids_sorted": [
+          11457,
+          11528,
+          11850,
+          12239
+        ]
+      },
+      "history": {
+        "population_valid": 381,
+        "population_total_incl_skipped": 381,
+        "skipped": [],
+        "sample_order_question_ids": [
+          4823,
+          5028,
+          4760,
+          4894
+        ],
+        "selected_question_ids_sorted": [
+          4760,
+          4823,
+          4894,
+          5028
+        ]
+      },
+      "philosophy": {
+        "population_valid": 499,
+        "population_total_incl_skipped": 499,
+        "skipped": [],
+        "sample_order_question_ids": [
+          11207,
+          11104,
+          11119,
+          11271
+        ],
+        "selected_question_ids_sorted": [
+          11104,
+          11119,
+          11207,
+          11271
+        ]
+      }
+    }
+  },
+  "validity_rule": "Skip only objective schema-invalid: empty question/option, <2 options, answer_index out of range, empty answer, answer letter != chr(65+answer_index), non-int question_id, empty src. Difficulty never used. cot_content emptiness is NOT invalid.",
+  "label_provenance": "Labels are the official dataset authors corrected labels as served at pinned revision (card documents post-release corrections 2024-07..2026-01 incl. answer fixes and leading-space fix). No LLM-generated gold added here; cot_content preserved verbatim (empty for many rows). Options were augmented from 4 to 10 with GPT-4 during original dataset construction per card (upstream construction, not this selection).",
+  "training_contamination_limits": "MMLU-Pro test is a public benchmark (12,032 rows) derived from original MMLU + STEM websites + TheoremQA + SciBench; plausibly present in pretraining corpora, so scores are comparative, not proof of unseen generalization. n=32 total / n=4 per category gives 25-point granularity per category and wide uncertainty; do not over-interpret small margins.",
+  "no_financial_content": "Target categories exclude business/economics/law/health; no financial questions selected; no private inputs used.",
+  "files": {
+    "gold": "local://mmlu-pro-32/mmlu-pro-32-gold.json",
+    "gold_sha256": "d619f2b3c81cc9795b9ea0f8ee6b22179eb4384b7247315c1d384d7298f51053",
+    "prompts_whitelist": "local://mmlu-pro-32/mmlu-pro-32-prompts.json",
+    "prompts_sha256": "eb096d0411983db0a4c807ac02f03536fdde109816b14306e81364f6305cdebc",
+    "prompts_whitelist_fields": [
+      "case_id",
+      "question_id",
+      "category",
+      "question",
+      "options"
+    ],
+    "gold_fields": [
+      "case_id",
+      "row_idx",
+      "question_id",
+      "question",
+      "options",
+      "answer",
+      "answer_index",
+      "cot_content",
+      "category",
+      "src"
+    ],
+    "warning": "GOLD file (answer/answer_index/cot_content) MUST NOT be sent to the model; prompt builder may read only the prompts whitelist file.",
+    "raw_collection_path": "/tmp/mmlu-progress.jsonl (12032 rows, datasets-server /rows JSONL accumulation from the fetch; scratch, not a local:// artifact)",
+    "selection_script": "/tmp/mmlu-progress.jsonl only; selection was an in-memory eval script (no script file saved) — full algorithm specified in selection_algorithm above; user save-everything note: raw collection path above is the only retained raw artifact"
+  },
+  "json_schemas": {
+    "gold_record": {
+      "case_id": "string mmlu-pro-001..032",
+      "row_idx": "int (datasets-server test split index)",
+      "question_id": "int (official)",
+      "question": "string",
+      "options": "array[string] (usually 10)",
+      "answer": "string letter A-J",
+      "answer_index": "int 0-based, == ord(answer)-65",
+      "cot_content": "string (often empty)",
+      "category": "string",
+      "src": "string upstream source tag"
+    },
+    "prompt_record": {
+      "case_id": "string",
+      "question_id": "int",
+      "category": "string",
+      "question": "string",
+      "options": "array[string]"
+    },
+    "metadata": "this file"
+  }
+}

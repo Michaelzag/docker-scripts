@@ -14,12 +14,16 @@ import datetime as dt
 import hashlib
 import json
 import os
-import re
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from agent_workload_benchmark import ChatClient, request_body, set_request_body_extra
+from agent_workload_benchmark import (
+    ChatClient,
+    request_body,
+    set_request_body_extra,
+    timestamp_pair,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -29,6 +33,7 @@ class Case:
     prompt: str
     expected: Any
     validator: str = "exact"
+    calibrated_input_tokens: int | None = None
 
 
 def fixed_cases() -> list[Case]:
@@ -128,6 +133,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--api-key-env", default="LOCAL_LLM_API_KEY")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--artifacts-dir", type=Path, help="Retain complete nonsecret HTTP evidence")
     parser.add_argument("--measurement-timeout", type=float, default=900)
     parser.add_argument("--usability-cutoff", type=float, default=60)
     parser.add_argument(
@@ -172,7 +178,10 @@ def main() -> int:
     if not api_key:
         print(f"error: {args.api_key_env} is unset", file=sys.stderr)
         return 2
-    client = ChatClient(args.base_url, api_key, args.measurement_timeout)
+    client = ChatClient(
+        args.base_url, api_key, args.measurement_timeout,
+        artifacts_dir=args.artifacts_dir, label=args.label, nonce="regression-v1",
+    )
     cases = fixed_cases()
     selected_categories = {
         value.strip() for value in args.categories.split(",") if value.strip()
@@ -187,7 +196,7 @@ def main() -> int:
             client, size, "long_middle" if index else "long_early"
         )
         cases.append(
-            Case(f"long_context_{size}", "long_context", prompt, needle, "contains")
+            Case(f"long_context_{size}", "long_context", prompt, needle, "contains", count)
         )
 
     rows: list[dict[str, Any]] = []
@@ -201,14 +210,16 @@ def main() -> int:
                 [{"role": "user", "content": case.prompt}],
                 case_max_tokens,
                 0,
-            )
+            ),
+            case_id=case.name,
         )
         actual = ""
         response: dict[str, Any] = result.response or {}
         if result.ok:
             message = ((response.get("choices") or [{}])[0].get("message")) or {}
             actual = message.get("content") or ""
-        passed = result.ok and validate(actual, case.expected, case.validator)
+        finish_reason = ((response.get("choices") or [{}])[0]).get("finish_reason")
+        passed = result.ok and finish_reason == "stop" and validate(actual, case.expected, case.validator)
         rows.append(
             {
                 "name": case.name,
@@ -225,6 +236,8 @@ def main() -> int:
                 "actual": normalize(actual)[:512],
                 "expected": case.expected,
                 "error": result.error,
+                "artifact": result.artifact,
+                "calibrated_input_tokens": case.calibrated_input_tokens,
             }
         )
 
@@ -236,6 +249,7 @@ def main() -> int:
     report = {
         "schema_version": 1,
         "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "timestamps": timestamp_pair(),
         "label": args.label,
         "endpoint": args.base_url,
         "model": args.model,
