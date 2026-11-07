@@ -1,0 +1,10 @@
+Select the best option for the question using only the supplied state. Return exactly one option key, without explanation, punctuation, or alternatives.
+
+State:
+$state
+
+Question:
+$question
+
+Options:
+$options

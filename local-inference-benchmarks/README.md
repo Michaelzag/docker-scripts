@@ -527,3 +527,143 @@ it streams bytes every 50 ms for three seconds, exercising success and HTTP-erro
 bodies plus sampler cleanup while a metadata response remains in flight. They
 require host `curl`, make no model calls, and are run by the parent with the
 offline suite above.
+
+## System One option-distribution adapter
+
+`system_one_benchmark.py` benchmarks a **local adapter** for ZagDB's Jev-style
+`/v1/systemone` decision contract. It does not call that production endpoint,
+implement its retries, or measure chat quality as a substitute for distributions.
+`datasets/system-one-synthetic-smoke/smoke.jsonl` contains four clearly labelled
+**SYNTHETIC smoke items, NOT ZagDB gold**: noul, choice, score, and uncertainty.
+They only establish harness behavior. Real owner-supplied fixtures can be passed
+as one or more `--fixtures` JSONL paths; no LLM judge is involved.
+
+Each row has `id`, `family`, `difficulty`, `state`, `question`, `gold`, `special`,
+and optionally `rationale`. `state` is a native Structured string, object or array.
+`question` has `id`, `type` (`noul`, `choice`, `score`), `text`, and an ordered
+`options` array of `{id, text}`. `gold` has `option_ids` (an acceptable set) and
+`defer_acceptable`; `special` maps `new`, `unknown`, `defer` to option ids or null.
+Noul requires the ids `true` and `false`. Score option ids remain fixture identities;
+the native legend uses their **original zero-based order**, not prompt order.
+Gold and rationale never enter the model prompt. Defer is correct **only** when
+`defer_acceptable`, even if someone lists it among gold ids.
+
+The adapter converts question text to native `instructions`; choice and noul
+criteria are ordered id-to-text maps, score criteria are ordered descriptions.
+The native request manifest uses `{model, state, questions: {question_id: Question}}`.
+It checks the 32,768-byte state and 61,440-byte native request limits before HTTP.
+It is not a production batching or 1 MiB response-cap test.
+
+`system_one_prompt.txt` is the owned default prompt template. A custom
+`--prompt-template PATH` must use exactly the `$state`, `$question`, `$options`
+placeholders; Structured objects/arrays render as compact JSON. `--system-rule`
+inserts a separate system message. The harness assigns A..Z prompt keys itself,
+with original order plus seeded permutations (`--variants 2`, `--seed 0` defaults).
+Each item requires 1..26 options and normally at least two distinct orders; an
+excessive variant count is rejected. A singleton has two identical diagnostic
+orders, margin/confidence 1 and entropy 0 (no meaningful order experiment).
+The final writer fixture format, not the older explicit chat-variants proposal,
+is supported.
+
+### Probability contract
+
+Direct mode calls `/apply-template` with `--direct-template-kwargs JSON`, appends
+`--direct-prefill STRING` (empty by default), then scores **every key explicitly**.
+For each key, `/tokenize` determines its canonical token count without special
+tokens; `/completion` forces that exact key with a grammar, `temperature=0`,
+`n_probs>=20`, `cache_prompt=true`, and **`post_sampling_probs=false`**.
+The authoritative field is each generated token's own
+`completion_probabilities[i].logprob`, paired with its `.token`.
+`top_logprobs` is **not** sufficient: a valid key can lie outside top-k.
+When the generated token also appears there, the two scores must agree.
+Missing own scores, mismatches, malformed output, or partial token coverage
+are item-variant **coverage failures**, never invented zero probabilities.
+
+Multi-token keys are scored by summing every generated token's pre-constraint
+logprob for that forced sequence. Probabilities are renormalized over complete
+key sequence scores using log-sum-exp, then mapped back to original option ids.
+`sequence_logprobs` and `first_token_logprobs` retain the unnormalized evidence.
+`leaked_mass = 1 - sum(raw key first-token probabilities)`, counting a shared
+first token only once. For single-token distinct keys this is exactly non-key
+mass; for multi-token keys it describes only the first step, **not** total
+sequence complement mass. Sequence scores are for the server tokenizer's
+canonical key encoding, not a sum over alternative tokenizations.
+Constrained post-sampling probabilities would hide uncertainty and are never used.
+
+Thinking mode uses `/v1/chat/completions` with `--thinking-extra-body JSON`,
+guarded by the existing native-profile allowlist: no request-shape/budget overrides.
+`--max-tokens` applies only to thinking (8192 default). Only a stop-finished,
+tool-free final content that strips to **exactly one case-sensitive key** is valid.
+Explanations, alternatives, truncation and reasoning-only answers are failures.
+Thinking reports accuracy/validity, **not** fabricated option distributions.
+
+Native direct answers are emitted as tagged `native_answer` plus `native_response`
+with the exact model pin, ordered question-id answer map, and usage. Noul emits
+`P(true)`; choice emits argmax option id, probabilities and normalized-pmax
+confidence; score emits a `"0"`..`"K-1"` legend with exact original descriptions,
+indexed probabilities, and **expected zero-based ordinal `sum(i*p_i)`**.
+ZagDB permits the ordinal scale but does not prescribe expectation versus argmax.
+Both conventions are recorded: score scalar metrics include expected ordinal,
+argmax ordinal, nearest acceptable gold-level absolute error for each, and exact
+argmax-level matches. Score scalars are operational in ZagDB gates, so do not
+assume the two conventions are interchangeable.
+Noul records its probability and correct/wrong/ambiguous counts at minima
+0.6, 0.7 and 0.8: the middle band is `1-min < P(true) < min`; confidently
+wrong answers are wrong, not ambiguous.
+Usage sums the **real reported counts across all per-key completion requests**,
+not tokenizer/template calls (cached prompts may reduce evaluated input counts).
+It reads `usage.prompt_tokens/completion_tokens`, `tokens_evaluated/predicted`,
+or `timings.prompt_n/predicted_n`; missing usage leaves `native_response=null`,
+never fake zero usage. `native_response_n` exposes that coverage.
+
+### Running and interpreting
+
+```sh
+python3 system_one_benchmark.py \
+  --fixtures datasets/system-one-synthetic-smoke/smoke.jsonl \
+  --base-url http://127.0.0.1:8080/v1 --model exact-loaded-model-pin \
+  --mode both --direct-template-kwargs '{"enable_thinking":false}' \
+  --thinking-extra-body '{"chat_template_kwargs":{"enable_thinking":true}}' \
+  --concurrency 2 --measurement-timeout 600 --max-tokens 8192 \
+  --label SYNTHETIC-smoke-NOT-ZagDB-gold \
+  --output results/unique-system-one-smoke.json \
+  --artifacts-dir results/unique-system-one-smoke-raw
+```
+
+Supply the credential using `LOCAL_LLM_API_KEY` (or the name in `--api-key-env`);
+do not put its value on the command line. Muse can use
+`--direct-prefill '<|message|>'`; Qwen/Nemotron direct profiles can disable thinking.
+Native settings are operator-supplied, not silently guessed. Optional `--manifest`
+is runtime/model provenance input, not a replacement for the generated scoring manifest.
+The shared output reservation rejects namespace collisions; use a fresh output.
+All requests/responses, including template/tokenizer/error attempts, use the shared
+full-wire retention/redaction. Keep report, adjacent manifest, run ownership file,
+fixture bytes and raw artifacts together.
+
+Each mode reports per family and overall. **`n` counts all selected item-variants**,
+not just successful HTTP responses; `n_items` separately counts fixture items.
+Failures and unattempted checkpoint rows remain in accuracy, validity, coverage
+and order-agreement denominators. Distribution summaries have explicit
+`distribution_n`; unavailable confidence is not imputed. Statistics include
+entropy (nats), top-two margin, `(K*pmax-1)/(K-1)` normalized-pmax, special-option
+TP/FP/FN/TN counts, correct/wrong entropy and margin means, margin-correctness
+AUROC (null unless both classes exist), binary argmax-confidence Brier/log-loss
+(against correctness, **not an invented gold distribution**; log floor 1e-15),
+and mean/max first-token leaked mass.
+Order stability uses all unordered variant pairs, original-id argmax agreement
+(failed pairs count against agreement), and mean Jensen-Shannon **distance**
+(`sqrt(JS divergence)`, base 2) on complete-distribution pairs, with pair counts.
+Nonstream per-item-variant latency includes template/scoring calls; p50 and
+nearest-rank p95, per-mode wall time and throughput include errors and checkpoint
+overhead. `items_per_second` divides completed item-variants by variant count;
+`item_variants_per_second` reports attempts directly at the configured concurrency.
+Requests and item-variants exceeding the production provider's 10-second
+timeout are counted, **not dropped**. The measurement timeout is the shared
+client's per-I/O timeout, not an absolute request deadline; this runner has no retries.
+
+Offline verification (only controlled loopback fake servers; no live models):
+
+```sh
+python3 -m unittest -v test_campaign_benchmarks test_published_knowledge_benchmark test_capacity_probe test_system_one_benchmark
+```
+
