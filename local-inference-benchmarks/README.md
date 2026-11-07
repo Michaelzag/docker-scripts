@@ -672,3 +672,29 @@ Offline verification (only controlled loopback fake servers; no live models):
 python3 -m unittest -v test_campaign_benchmarks test_published_knowledge_benchmark test_capacity_probe test_system_one_benchmark
 ```
 
+## ZagDB generative benchmark
+
+`generative_benchmark.py` evaluates the supplied ontology naming and hub summary
+fixtures without a model judge. It verifies each rendered message against the
+fixture hashes, makes one request per row with temperature and seed fixed at zero,
+and retains request/response evidence. The hub summary prompt is an **eval-only
+proposal**, not a production prompt. Invalid shapes and length finishes fail
+without repair or retry. The intentionally oversized hs-13 must receive a typed
+context-length refusal; it is never truncated to fit.
+
+```sh
+python3 generative_benchmark.py \
+  --fixtures /path/to/generative --templates /path/to/generative/templates.json \
+  --base-url http://127.0.0.1:8080/v1 --model MODEL \
+  --extra-body '{"chat_template_kwargs":{"enable_thinking":false}}' \
+  --max-tokens 8192 --concurrency 1 --measurement-timeout 600 \
+  --output /path/to/report.json --artifacts-dir /path/to/artifacts --label run
+```
+
+The API key is read from `LOCAL_LLM_API_KEY` by default; `--api-key-env`
+selects another variable. Reports retain per-row check outcomes and family
+statistics, including errors, latency, and terminal length/shape failures.
+The shared client retains sanitized wire evidence in the artifacts directory.
+Run the offline fake-server tests with `python3 -m unittest -v
+test_generative_benchmark`.
+
